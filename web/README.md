@@ -22,7 +22,7 @@ npm run preview
 
 Run `npm run wasm:build` before the first development session and before unit tests after changing Rust. SVG tests execute the compiled usvg parser. Both `build` and `test:e2e` compile the actual WASM sources; neither depends on an untracked prebuilt binary. `test:e2e` tests production `dist` on port 4173 in Chromium, Firefox and WebKit. `npx playwright test --list` lists the current cases; `npx playwright test tests/theme.spec.ts` reuses an already built `dist`.
 
-The build isolates Cargo from the ancestor wrapper configuration. It pins sparrow to merged main revision `7f0e10f946f70a86138d3938548a13ee46464f39` including [PR #165](https://github.com/JeroenGar/sparrow/pull/165) and uses unmodified jagua-rs 0.8.3 from crates.io. Failed initial placement returns an explanatory error; exact material-boundary contact retains upstream collision semantics. Four WASM variants use pinned nightly Rust: serial and shared-memory, each with and without SIMD. SIMD builds enable Sparrow’s portable-SIMD collision kernel and `+simd128`; compatibility builds disable SIMD. Both shared-memory variants rebuild the standard library with atomics and wasm-bindgen-rayon 1.3.0. A native feature probe selects SIMD when supported, including for SVG import. Shared-memory startup can fall back to serial independently. Diagnostics record the initialized variant in `solverBinary`, alongside the solver revision and actual thread count. Exact resolved dependencies are in the npm and Cargo lockfiles.
+The build isolates Cargo from the ancestor wrapper configuration. It uses a local Sparrow fork based on merged main revision `7f0e10f946f70a86138d3938548a13ee46464f39` including [PR #165](https://github.com/JeroenGar/sparrow/pull/165), with a modified local jagua-rs fork based on crates.io 0.8.3. Their source and licenses are retained in `vendor/sparrow` and `vendor/jagua-rs`. Failed initial placement returns an explanatory error; exact material-boundary contact retains upstream collision semantics. Four WASM variants use pinned nightly Rust: serial and shared-memory, each with and without SIMD. SIMD builds enable Sparrow’s portable-SIMD collision kernel and `+simd128`; compatibility builds disable SIMD. Both shared-memory variants rebuild the standard library with atomics and wasm-bindgen-rayon 1.3.0. A native feature probe selects SIMD when supported, including for SVG import. Shared-memory startup can fall back to serial independently. Diagnostics record the initialized variant in `solverBinary`, alongside the solver revision and actual thread count. Exact resolved dependencies are in the npm and Cargo lockfiles.
 
 ## Static hosting and threads
 
@@ -101,8 +101,8 @@ Files, geometry and diagnostics are processed locally. Ordinary static asset req
 Third-party full texts and source references are in `public/THIRD_PARTY_NOTICES.txt`, the two `public/RUST-LIBRARY-*.html` files and `public/examples/NOTICE.txt`. Regenerate/check from the repository root:
 
 ```sh
-python3 web/scripts/generate-notices.py
-python3 web/scripts/generate-notices.py --check
+node web/scripts/generate-notices.mjs
+node web/scripts/generate-notices.mjs --check
 ```
 
 See [the notices audit](../docs/engine/notices-audit.md) for exact upstream packaging gaps and source availability. The public sparrow-studio repository contains the application and WASM bridge; exact upstream dependency sources are linked in the notices. Preserve the notice files when publishing, and verify their deployed relative links.

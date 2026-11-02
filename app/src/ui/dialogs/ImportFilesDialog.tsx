@@ -6,6 +6,7 @@ import { defaultDXFLayers, type Part } from '../../engine/model';
 import type { ImportFile } from '../../engine/workers/protocol';
 import { geometryTask } from '../../engine/workers/geometryTask';
 import { ringsPath } from '../Canvas';
+import { nameImportedParts } from '../../project/model';
 import { useStudio } from '../context';
 import { Dialog } from '../Dialog';
 import { formatLength, inputLength, parseLength } from '../format';
@@ -17,17 +18,19 @@ const MAX_BATCH = 25 * 1024 * 1024;
 
 /** Import parts from drawing files, after a preview of units, contours and warnings. */
 export function ImportFilesDialog({
+  target = 'parts',
   onAdd,
   onClose,
 }: {
+  target?: 'parts' | 'sheets';
   onAdd: (parts: Part[], stripWidthMm?: number) => void;
   onClose: () => void;
 }) {
-  const { unit } = useStudio();
+  const { unit, project } = useStudio();
   const picker = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<ImportFile[]>();
   const [scale, setScale] = useState(1);
-  const [toleranceText, setToleranceText] = useState(inputLength(0.01, unit));
+  const [toleranceText, setToleranceText] = useState(inputLength(0.05, unit));
   const [enclosed, setEnclosed] = useState<'holes' | 'parts'>('holes');
   const [layers, setLayers] = useState<string[]>();
   // A preview remembers what it was made from; it is outdated as soon as any of that changes.
@@ -60,6 +63,10 @@ export function ImportFilesDialog({
       setError('Import limit: 10 MiB per file, 25 MiB per batch.');
       return;
     }
+    if (target === 'sheets' && batch.some((file) => !file.name.toLowerCase().endsWith('.dxf'))) {
+      setError('Sheet contours must be imported from DXF files.');
+      return;
+    }
     setError('');
     const read = await Promise.all(
       batch.map(async (file) => ({ name: file.name, text: await file.text() })),
@@ -77,12 +84,27 @@ export function ImportFilesDialog({
     setError('');
     setExclude(false);
     try {
+      const { layers: chosenLayers, ...rest } = chosen;
       const reply = await geometryTask({
         type: 'import',
         runId: request,
         documentRevision: 1,
         files: list,
-        ...chosen,
+        ...rest,
+        layers:
+          target === 'sheets' && chosenLayers === undefined
+            ? Array.from(
+                new Set(
+                  list.flatMap((file) => {
+                    const lines = file.text.split(/\r\n|\n|\r/);
+                    const found: string[] = [];
+                    for (let i = 0; i + 1 < lines.length; i += 2)
+                      if (lines[i].trim() === '8') found.push(lines[i + 1].trim());
+                    return found;
+                  }),
+                ),
+              )
+            : chosenLayers,
       });
       if (request !== latest.current) return;
       if (reply.type !== 'import-review') throw Error('Could not read these files.');
@@ -106,11 +128,13 @@ export function ImportFilesDialog({
     busy ||
     !review.document.parts.length ||
     (!!review.issues?.length && !exclude);
-  const parts = review?.document.parts ?? [];
+  const importedParts = review?.document.parts ?? [];
+  const parts =
+    target === 'parts' ? nameImportedParts(project.parts, importedParts) : importedParts;
 
   return (
     <Dialog
-      title="Import parts from files"
+      title={target === 'sheets' ? 'Import sheet contours from DXF' : 'Import parts from files'}
       onClose={onClose}
       wide
       actions={
@@ -135,7 +159,8 @@ export function ImportFilesDialog({
                 )
               }
             >
-              Add {parts.length} {parts.length === 1 ? 'part' : 'parts'}
+              Add {parts.length}{' '}
+              {target === 'sheets' ? 'sheet types' : parts.length === 1 ? 'part' : 'parts'}
             </button>
           )}
         </>
@@ -152,7 +177,9 @@ export function ImportFilesDialog({
         <p>
           {files
             ? files.map((file) => file.name).join(', ')
-            : 'Drop DXF, SVG or sparrow JSON files here.'}
+            : target === 'sheets'
+              ? 'Drop DXF sheet contour files here. Each independent outer contour becomes a stock type; inner contours can be holes.'
+              : 'Drop DXF, SVG or sparrow JSON files here.'}
         </p>
         <button onClick={() => picker.current?.click()}>
           {files ? 'Choose other files…' : 'Choose files…'}
@@ -162,7 +189,7 @@ export function ImportFilesDialog({
           hidden
           type="file"
           multiple
-          accept=".json,.svg,.dxf"
+          accept={target === 'sheets' ? '.dxf' : '.json,.svg,.dxf'}
           onChange={(event) => {
             if (event.target.files) void read(event.target.files);
             event.target.value = '';
@@ -191,7 +218,10 @@ export function ImportFilesDialog({
               {!toleranceValid && (
                 <span className="field-error">Enter a positive distance up to 100 mm.</span>
               )}
-              <span className="muted">Curves become straight segments within this distance.</span>
+              <span className="muted">
+                Curves become straight segments within this distance. A larger value reduces
+                vertices but lowers contour accuracy.
+              </span>
             </label>
           )}
           {hasDXF && (
@@ -213,9 +243,14 @@ export function ImportFilesDialog({
                 <label key={layer} className="choice">
                   <input
                     type="checkbox"
-                    checked={(layers ?? defaultDXFLayers(availableLayers)).includes(layer)}
+                    checked={(
+                      layers ??
+                      (target === 'sheets' ? availableLayers : defaultDXFLayers(availableLayers))
+                    ).includes(layer)}
                     onChange={(event) => {
-                      const current = layers ?? defaultDXFLayers(availableLayers);
+                      const current =
+                        layers ??
+                        (target === 'sheets' ? availableLayers : defaultDXFLayers(availableLayers));
                       setLayers(
                         event.target.checked
                           ? [...current, layer]

@@ -6,6 +6,18 @@ const options={scale:1,tolerance:.01,enclosed:'holes' as const};
 export const dxf=(entities:string,units=4)=>`0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n${units}\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n${entities}0\nENDSEC\n0\nEOF\n`;
 const poly=(points:number[][],layer='cut')=>`0\nLWPOLYLINE\n8\n${layer}\n90\n${points.length}\n70\n1\n${points.map(([x,y,b=0])=>`10\n${x}\n20\n${y}\n42\n${b}\n`).join('')}`;
 const line=(x:number,y:number,u:number,v:number)=>`0\nLINE\n10\n${x}\n20\n${y}\n11\n${u}\n21\n${v}\n`;
+it('skips strictly zero-length LINE entities without discarding short nonzero lines',()=>{
+  const edges=line(0,0,10,0)+line(10,0,10,10)+line(10,10,0,10)+line(0,10,0,0);
+  const review=importDXF(dxf(edges+line(10,0,10,0)+line(0,10,0,10)),'zero.dxf',options);
+  expect(review.document.parts).toHaveLength(1);
+  expect(review.issues).toEqual([]);
+  expect(review.warnings).toContain('Skipped 2 strictly zero-length LINE entities.');
+  expect(Math.abs(area(review.document.parts[0].outer))).toBeCloseTo(100);
+  const short=importDXF(dxf(line(0,0,.001,0)),'short.dxf',options);
+  expect(short.warnings.some(w=>w.includes('zero-length'))).toBe(false);
+  expect(short.issues?.length).toBeGreaterThan(0);
+});
+
 it('flattens a bulged semicircle and assembles a LINE/ARC loop',()=>{
   const bulged=importDXF(dxf(poly([[0,0,1],[20,0]])),'bulge.dxf',options);
   expect(bulged.issues).toEqual([]);

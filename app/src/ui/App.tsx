@@ -1,16 +1,23 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { newId } from '../engine/model';
+import { newId, type SheetStock } from '../engine/model';
+import { bounds } from '../engine/geometry/normalize';
 import { useSolver } from '../engine/workers/useSolver';
 import { geometryTask } from '../engine/workers/geometryTask';
 import { loadExample } from '../project/examples';
 import { parseProject, projectFileName, serializeProject } from '../project/file';
-import { addParts, newProject, projectJob, type ProjectDocument } from '../project/model';
+import {
+  addParts,
+  nameImportedParts,
+  stockSheets,
+  newProject,
+  projectJob,
+  type ProjectDocument,
+} from '../project/model';
 import { readPreferences, writePreferences, type Preferences } from '../project/preferences';
 import { browserStore, VersionConflict, type StoredProject } from '../project/store';
 import { StudioContext, type Studio, type Tab } from './context';
 import { AboutDialog } from './dialogs/AboutDialog';
 import { Logo } from './Logo';
-import { ProDialog } from './dialogs/ProDialog';
 import { ExamplesDialog } from './dialogs/ExamplesDialog';
 import { ImportFilesDialog } from './dialogs/ImportFilesDialog';
 import { ImportFromProjectDialog, type ProjectImport } from './dialogs/ImportFromProjectDialog';
@@ -121,10 +128,9 @@ type Dialogs =
   | { type: 'rename' }
   | { type: 'projects' }
   | { type: 'examples' }
-  | { type: 'pro' }
   | { type: 'preferences' }
   | { type: 'about' }
-  | { type: 'import-files' }
+  | { type: 'import-files'; kind?: 'parts' | 'sheets' }
   | { type: 'import-project'; kind: 'parts' | 'sheets' | 'machines' };
 
 const TABS: { id: Tab; label: string }[] = [
@@ -310,18 +316,17 @@ function StudioShell({
     edit((previous) => {
       const current = addParts(
         previous,
-        content.parts.map((part) => ({ ...part, id: newId() })),
+        nameImportedParts(previous.parts, content.parts).map((part) => ({ ...part, id: newId() })),
       );
       return {
         ...current,
-        stock: content.strip
+        stock: content.stock
           ? {
-              ...current.stock,
-              strip: {
-                ...current.stock.strip,
-                name: content.strip.name,
-                widthMm: content.strip.widthMm,
-              },
+              ...content.stock,
+              strip: { ...content.stock.strip, id: newId() },
+              ...(content.stock.packing === 'sheets'
+                ? { sheets: stockSheets(content.stock).map((sheet) => ({ ...sheet, id: newId() })) }
+                : {}),
             }
           : current.stock,
         machines: [
@@ -341,11 +346,10 @@ function StudioShell({
       preferences,
       setPreferences,
       setTab,
-      openPro: () => setDialog({ type: 'pro' }),
       openImport: (kind, source) =>
         setDialog(
-          source === 'files' && kind === 'parts'
-            ? { type: 'import-files' }
+          source === 'files' && (kind === 'parts' || kind === 'sheets')
+            ? { type: 'import-files', kind }
             : { type: 'import-project', kind },
         ),
       showError,
@@ -413,7 +417,6 @@ function StudioShell({
           >
             <Gear />
           </button>
-          <button onClick={() => setDialog({ type: 'pro' })}>Sign in</button>
           <input
             ref={fileInput}
             hidden
@@ -509,7 +512,6 @@ function StudioShell({
           }
         />
       )}
-      {dialog?.type === 'pro' && <ProDialog onClose={() => setDialog(undefined)} />}
       {dialog?.type === 'about' && <AboutDialog onClose={() => setDialog(undefined)} />}
       {dialog?.type === 'preferences' && (
         <PreferencesDialog
@@ -520,12 +522,47 @@ function StudioShell({
       )}
       {dialog?.type === 'import-files' && (
         <ImportFilesDialog
+          target={dialog.kind ?? 'parts'}
           onClose={() => setDialog(undefined)}
           onAdd={(parts, widthMm) => {
+            if (dialog.kind === 'sheets') {
+              edit((previous) => {
+                const added: SheetStock[] = parts.map((part) => {
+                  const b = bounds(part.outer);
+                  return {
+                    id: newId(),
+                    name: part.name,
+                    kind: 'polygon',
+                    outer: part.outer,
+                    holes: part.holes,
+                    widthMm: b[3] - b[1],
+                    lengthMm: b[2] - b[0],
+                    quantity: part.quantity,
+                    priority: 0,
+                    source: part.source,
+                    approximationToleranceMm: part.approximationToleranceMm,
+                  };
+                });
+                const items = [...stockSheets(previous.stock), ...added];
+                return {
+                  ...previous,
+                  stock: {
+                    packing: 'sheets',
+                    strip: previous.stock.strip,
+                    lengthMm: items[0]?.lengthMm ?? 2440,
+                    quantity: items.reduce((sum, item) => sum + item.quantity, 0),
+                    sheets: items,
+                  },
+                };
+              });
+              setDialog(undefined);
+              setTab('sheets');
+              return;
+            }
             edit((previous) => {
               const current = addParts(
                 previous,
-                parts.map((part) => ({ ...part, id: newId() })),
+                nameImportedParts(previous.parts, parts).map((part) => ({ ...part, id: newId() })),
               );
               return {
                 ...current,

@@ -1,3 +1,5 @@
+import { normalizeSheetStocks, stockArea, stockGeometryKey, usedStockArea } from '../engine/stock';
+import type { SheetStock } from '../engine/model';
 import {
   LIMITS,
   newId,
@@ -15,8 +17,38 @@ export const PROJECT_VERSION = 1;
 
 /** One strip of fixed width; the solver minimizes the length it uses. */
 export type Strip = { id: string; name: string; widthMm: number };
-/** What the parts are nested into. Sheets (bin packing) arrive with sparrow pro. */
-export type Stock = { packing: 'strip'; strip: Strip };
+/** Stock keeps the strip dimensions shared by strip and fixed rectangular sheet jobs. */
+export type Stock =
+  | { packing: 'strip'; strip: Strip }
+  | { packing: 'sheets'; strip: Strip; lengthMm: number; quantity: number; sheets?: SheetStock[] };
+
+export function stockSheets(stock: Stock): SheetStock[] {
+  if (stock.packing !== 'sheets') return [];
+  return (
+    stock.sheets ?? [
+      {
+        id: stock.strip.id,
+        name: stock.strip.name,
+        kind: 'rectangle',
+        widthMm: stock.strip.widthMm,
+        lengthMm: stock.lengthMm,
+        quantity: stock.quantity,
+        priority: 0,
+      },
+    ]
+  );
+}
+export function setStockSheets(stock: Stock, sheets: SheetStock[]): Stock {
+  const checked = normalizeSheetStocks(sheets, true),
+    first = checked[0];
+  return {
+    packing: 'sheets',
+    strip: first ? { id: first.id, name: first.name, widthMm: first.widthMm } : stock.strip,
+    lengthMm: first?.lengthMm ?? (stock.packing === 'sheets' ? stock.lengthMm : 1000),
+    quantity: checked.reduce((n, s) => n + s.quantity, 0),
+    sheets: checked,
+  };
+}
 /** Machine-specific solver inputs. Clamps and a separate sheet boundary distance come later. */
 export type MachinePreset = { id: string; name: string; gapMm: number };
 /** Local solving only, for now. */
@@ -26,6 +58,7 @@ export type Threads = 0 | 1 | 2 | 3;
 export type SolverSettings = {
   solveWith: SolveWith;
   timeLimitSeconds: TimeLimit;
+  sheetStagnationSeconds: number;
   preset: Preset;
   threads: Threads;
 };
@@ -51,7 +84,7 @@ export type ProjectDocument = {
   machines: MachinePreset[];
   machineId: string;
   settings: SolverSettings;
-  /** Holds at most one solution for now; sparrow pro will return several. */
+  /** Holds the latest saved solution. */
   solutions: Solution[];
 };
 
@@ -60,6 +93,7 @@ export const TIME_LIMITS: TimeLimit[] = [null, 10, 30, 60, 120, 300, 600];
 export const DEFAULT_SOLVER_SETTINGS: SolverSettings = {
   solveWith: 'local',
   timeLimitSeconds: null,
+  sheetStagnationSeconds: 15,
   preset: 'standard',
   threads: 0,
 };
@@ -100,6 +134,14 @@ export function projectJob(project: ProjectDocument): Job {
       materialWidthMm: project.stock.strip.widthMm,
       clearanceMm: activeMachine(project).gapMm,
       timeLimitSeconds: project.settings.timeLimitSeconds,
+      sheetStagnationSeconds: project.settings.sheetStagnationSeconds,
+      ...(project.stock.packing === 'sheets'
+        ? {
+            sheetLengthMm: project.stock.lengthMm,
+            sheetCount: stockSheets(project.stock).reduce((n, s) => n + s.quantity, 0),
+            sheetStocks: stockSheets(project.stock),
+          }
+        : {}),
     },
   };
 }
@@ -118,6 +160,10 @@ export function jobKey(job: Job): string {
       ]),
     width: job.settings.materialWidthMm,
     gap: job.settings.clearanceMm,
+    sheetLengthMm: job.settings.sheetLengthMm,
+    sheetCount: job.settings.sheetCount,
+    sheetStocks: job.settings.sheetStocks?.map(stockGeometryKey),
+    sheetStock: job.settings.sheetStock && stockGeometryKey(job.settings.sheetStock),
   });
 }
 
@@ -137,15 +183,70 @@ export function startBlockers(project: ProjectDocument): string[] {
   if (!Number.isFinite(width) || width <= 0 || width > LIMITS.extent)
     reasons.push('Set a strip width in the Sheets tab.');
   if (!Number.isFinite(gap) || gap < 0) reasons.push('Set a valid gap in the Machine tab.');
-  else if (Number.isFinite(width) && gap >= width)
+  else if (project.stock.packing === 'strip' && Number.isFinite(width) && gap >= width)
     reasons.push('The gap must be smaller than the strip width.');
+  if (
+    !Number.isInteger(project.settings.sheetStagnationSeconds) ||
+    project.settings.sheetStagnationSeconds < 1 ||
+    project.settings.sheetStagnationSeconds > 600
+  )
+    reasons.push('Set a sheet no-improvement timeout from 1 to 600 seconds in Settings.');
+  if (project.stock.packing === 'sheets') {
+    if (project.stock.sheets !== undefined)
+      try {
+        normalizeSheetStocks(stockSheets(project.stock));
+      } catch (error) {
+        reasons.push(error instanceof Error ? error.message : String(error));
+      }
+    if (
+      !Number.isFinite(project.stock.lengthMm) ||
+      project.stock.lengthMm <= 0 ||
+      project.stock.lengthMm > LIMITS.extent
+    )
+      reasons.push('Set a valid sheet length in the Sheets tab.');
+    if (
+      !Number.isInteger(project.stock.quantity) ||
+      project.stock.quantity < 1 ||
+      project.stock.quantity > LIMITS.copies
+    )
+      reasons.push('Set a sheet quantity from 1 to 500.');
+  }
   return reasons;
 }
 
-/** Utilization of a solution's strip: net part area over the used rectangle. */
+/** Net part area over actual sheet capacity, or the used rectangle for an open strip. */
 export function utilization(job: Job, result: Result, netArea: (part: Part) => number): number {
+  if (result.sheets) {
+    const area = result.sheets.reduce(
+      (sum, sheet) =>
+        sum + sheet.job.parts.reduce((n, part) => n + netArea(part) * part.quantity, 0),
+      0,
+    );
+    const capacity = result.sheets.reduce(
+      (sum, sheet) =>
+        sum +
+        (sheet.job.settings.sheetStock
+          ? stockArea(sheet.job.settings.sheetStock)
+          : sheet.job.settings.materialWidthMm *
+            (sheet.job.settings.sheetLengthMm ?? sheet.result.usedLengthMm)),
+      0,
+    );
+    return capacity ? (area / capacity) * 100 : 0;
+  }
   const area = job.parts.reduce((sum, part) => sum + netArea(part) * part.quantity, 0);
-  return (area / (job.settings.materialWidthMm * result.usedLengthMm)) * 100;
+  const capacity = job.settings.sheetStock
+    ? stockArea(job.settings.sheetStock)
+    : job.settings.materialWidthMm * (job.settings.sheetLengthMm ?? result.usedLengthMm);
+  return capacity ? (area / capacity) * 100 : 0;
+}
+
+/** Net part area over the material to the left of the used-length boundary. */
+export function usedUtilization(job: Job, result: Result, netArea: (part: Part) => number): number {
+  const area = job.parts.reduce((sum, part) => sum + netArea(part) * part.quantity, 0);
+  const capacity = job.settings.sheetStock
+    ? usedStockArea(job.settings.sheetStock, result.usedLengthMm)
+    : job.settings.materialWidthMm * result.usedLengthMm;
+  return capacity ? (area / capacity) * 100 : 0;
 }
 
 /** Compares rotation rules by the angles they allow. */
@@ -185,6 +286,18 @@ export function setPartRotations(
       return rotations === 'default' ? rest : { ...rest, rotations };
     }),
   };
+}
+
+/** Names newly imported types without renaming existing parts or their source metadata. */
+export function nameImportedParts(existing: { name: string }[], parts: Part[]): Part[] {
+  let number = existing.reduce(
+    (max, part) =>
+      /^\d+$/.test(part.name) && Number.isSafeInteger(Number(part.name))
+        ? Math.max(max, Number(part.name))
+        : max,
+    0,
+  );
+  return parts.map((part) => ({ ...part, name: String(++number).padStart(3, '0') }));
 }
 
 /** Add parts. A part whose rule matches the defaults follows them; any other keeps its own. */

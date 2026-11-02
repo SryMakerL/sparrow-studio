@@ -1,14 +1,18 @@
-import type { Start, SolverMessage } from './protocol';
+import type { Start, SessionInit, SessionStep, SessionCancel, SolverMessage } from './protocol';
 
 type PoolInit = { type: 'pool-init'; threads: number; init: { module_or_path: WebAssembly.Module; memory: WebAssembly.Memory }; receiver: number };
 let dispose = () => {};
 let skip = () => {};
+let step: (request: SessionStep) => void = () => {};
+let cancel: (request: SessionCancel) => void = () => {};
 
 // Keep this coordinator idle: it owns every runtime and pool worker, and can
 // terminate them even while the solver is blocked in synchronous WASM.
-self.onmessage = ({ data }: MessageEvent<Start | { type: 'stop' } | { type: 'skip' }>) => {
+self.onmessage = ({ data }: MessageEvent<Start | SessionInit | SessionStep | SessionCancel | { type: 'stop' } | { type: 'skip' }>) => {
   if (data.type === 'stop') { dispose(); self.close(); return; }
   if (data.type === 'skip') { skip(); return; }
+  if (data.type === 'session-step') { step(data); return; }
+  if (data.type === 'session-cancel') { cancel(data); return; }
   const requested = data.threads ?? Math.min(3, Math.max(1, (navigator.hardwareConcurrency || 2) - 1));
   const threads = self.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined' ? requested : 1;
   if (!Number.isInteger(requested) || requested < 1 || requested > 3) {
@@ -17,13 +21,32 @@ self.onmessage = ({ data }: MessageEvent<Start | { type: 'stop' } | { type: 'ski
   }
   const start = data;
   let phase='';
-  const control = self.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined' ? new Int32Array(new SharedArrayBuffer(4)) : undefined;
+  const isSession = start.type === 'session-init';
+  const control = self.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined'
+    ? new Int32Array(isSession && start.control ? start.control : new SharedArrayBuffer(4)) : undefined;
   function launch(count: number, fallbackReason?: string) {
     const runtime = new Worker(new URL('./solver-runtime.worker.ts', import.meta.url), { type: 'module' });
     const pool: Worker[] = [];
     let ready = false, closed = false;
+    let activeAttempt: number | undefined;
+    step = request => {
+      if (!isSession || closed) return;
+      if (!ready) {
+        self.postMessage({ type: 'attempt-error', runId: request.runId, documentRevision: request.documentRevision, attemptId: request.attemptId, message: 'Sheet session is not initialized.' });
+        return;
+      }
+      activeAttempt = request.attemptId;
+      if (control) Atomics.store(control, 0, 0);
+      runtime.postMessage(request);
+    };
+    cancel = request => {
+      if (!isSession || closed || activeAttempt !== request.attemptId) return;
+      // The runtime cannot receive messages while its synchronous WASM step runs.
+      if (control) Atomics.store(control, 0, 1);
+      runtime.postMessage(request);
+    };
     skip=()=>{
-      if(!closed && phase==='Exploration' && control) Atomics.compareExchange(control,0,0,1);
+      if(!isSession && !closed && phase==='Exploration' && control) Atomics.compareExchange(control,0,0,1);
     };
     dispose = () => { closed = true; clearTimeout(timer); runtime.terminate(); pool.forEach(worker => worker.terminate()); };
     const fail = (message: string) => {
@@ -44,7 +67,7 @@ self.onmessage = ({ data }: MessageEvent<Start | { type: 'stop' } | { type: 'ski
           pool.push(worker);
           worker.onmessage = ({ data }) => {
             if (closed) return;
-            if (data.type === 'solver-log') self.postMessage({...data,runId:start.runId,documentRevision:start.documentRevision});
+            if (data.type === 'solver-log') self.postMessage({...data,runId:start.runId,documentRevision:start.documentRevision,...(isSession && activeAttempt !== undefined ? {attemptId:activeAttempt} : {})});
             else if (data.type === 'error') fail(data.message);
             else if (data.type === 'ready' && ++initialized === count) runtime.postMessage({ type: 'pool-ready' });
           };
@@ -56,7 +79,8 @@ self.onmessage = ({ data }: MessageEvent<Start | { type: 'stop' } | { type: 'ski
       }
       if (message.type === 'solver-log') { self.postMessage({...message,runId:start.runId,documentRevision:start.documentRevision});return; }
       if (message.type === 'error') { fail(message.message); return; }
-      if (message.type === 'ready') { ready = true; clearTimeout(timer); }
+      if (message.type === 'ready' && !isSession || message.type === 'session-ready') { ready = true; clearTimeout(timer); }
+      if (message.type === 'finished' || message.type === 'attempt-error') activeAttempt = undefined;
       if(message.type==='phase')phase=message.phase;
       self.postMessage(message.type === 'ready' ? { ...message, fallbackReason } : message);
     };

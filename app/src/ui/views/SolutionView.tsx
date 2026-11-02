@@ -2,28 +2,37 @@ import { useMemo, useState } from 'react';
 import { netArea, worldParts, type WorldPart } from '../../engine/geometry/validate';
 import { geometryTask } from '../../engine/workers/geometryTask';
 import { projectFileName } from '../../project/file';
-import { jobKey, projectJob, utilization } from '../../project/model';
+import { jobKey, projectJob, utilization, usedUtilization } from '../../project/model';
 import { Canvas } from '../Canvas';
-import { ProRow } from '../ProTag';
 import { useStudio } from '../context';
 import { download } from '../download';
 import { formatArea, formatLength, formatPercent, formatSeconds } from '../format';
 import { RunBar } from '../RunBar';
+import { sheetStack } from './sheetStack';
+import { stockArea } from '../../engine/stock';
 import { LayoutDrawing, placementKey } from './LayoutDrawing';
 import { PartThumb } from './PartsView';
 
 type Format = 'svg' | 'dxf' | 'pdf';
-type Hover = { part: WorldPart; x: number; y: number };
+type Hover = { part: WorldPart; x: number; y: number; sheetIndex?: number };
 
 export function SolutionView() {
   const { project, unit, showError, solver } = useStudio();
   const solution = project.solutions[0];
+  const [sheetIndex, setSheetIndex] = useState(0);
+  const sheets = solution?.result.sheets;
+  const selectedSheet = sheets?.[Math.min(sheetIndex, Math.max(0, sheets.length - 1))];
+  const display = selectedSheet ?? solution;
   const [highlight, setHighlight] = useState<string>();
   const [hover, setHover] = useState<Hover>();
   const [busy, setBusy] = useState<Format>();
   const world = useMemo(
-    () => (solution ? worldParts(solution.job, solution.result) : []),
-    [solution],
+    () => (display && (!sheets || selectedSheet) ? worldParts(display.job, display.result) : []),
+    [display, sheets, selectedSheet],
+  );
+  const sheetWorlds = useMemo(
+    () => sheets?.map((sheet) => worldParts(sheet.job, sheet.result)) ?? [],
+    [sheets],
   );
   const stale = useMemo(
     () => !!solution && jobKey(solution.job) !== jobKey(projectJob(project)),
@@ -51,12 +60,20 @@ export function SolutionView() {
       </div>
     );
 
-  const { job, result } = solution;
+  const { job, result } = display!;
   const width = job.settings.materialWidthMm;
+  const sheetLength = job.settings.sheetLengthMm ?? result.usedLengthMm;
+  const stack = sheetStack(sheets ?? [], width, sheetLength);
   const partsArea = job.parts.reduce((sum, part) => sum + netArea(part) * part.quantity, 0);
-  const waste = width * result.usedLengthMm - partsArea;
+  const waste =
+    (job.settings.sheetStock ? stockArea(job.settings.sheetStock) : width * sheetLength) -
+    partsArea;
   const placed = job.parts.filter((part) => part.quantity > 0);
-  const names = new Map(job.parts.map((part) => [part.id, part.name]));
+  const unplaced = solution.result.unplaced ?? [];
+  const totalPlaced = sheets
+    ? sheets.reduce((sum, sheet) => sum + sheet.result.placements.length, 0)
+    : result.placements.length;
+  const names = new Map(solution.job.parts.map((part) => [part.id, part.name]));
 
   async function exportLayout(format: Format) {
     setBusy(format);
@@ -69,7 +86,12 @@ export function SolutionView() {
         result,
       });
       if (reply.type !== 'export-result') throw Error('Could not export the layout.');
-      const name = projectFileName(project.name, format);
+      const name = projectFileName(
+        sheets
+          ? `${project.name}-sheet-${Math.min(sheetIndex, sheets.length - 1) + 1}`
+          : project.name,
+        format,
+      );
       if (format === 'pdf') {
         const { exportPDF } = await import('../../engine/export/pdf');
         download(name, await exportPDF(reply.bundle.svg), 'application/pdf');
@@ -105,7 +127,11 @@ export function SolutionView() {
 
   const hovered = hover?.part;
   const hoveredPlacement =
-    hovered && result.placements.find((p) => placementKey(p) === placementKey(hovered));
+    hovered &&
+    (hover?.sheetIndex !== undefined
+      ? sheets?.[hover.sheetIndex]?.result
+      : result
+    )?.placements.find((p) => placementKey(p) === placementKey(hovered));
 
   return (
     <div className="view">
@@ -116,82 +142,140 @@ export function SolutionView() {
         </div>
         <div className="list-scroll">
           <div className="summary">
-            <div className="metrics">
-              <div className="metric">
-                <span className="metric-value">
-                  {formatPercent(utilization(job, result, netArea))}
+            {sheets && (
+              <div className="stack">
+                <strong>
+                  {solution.result.roundIndex !== undefined
+                    ? `Best round ${solution.result.roundIndex + 1} · `
+                    : 'Best saved plan · '}
+                  {sheets.length} sheets used · {totalPlaced} parts placed
+                </strong>
+                <span className="muted">
+                  Total sheet utilization:{' '}
+                  {formatPercent(utilization(solution.job, solution.result, netArea))} ·{' '}
+                  {formatSeconds(solution.result.elapsedSeconds)} elapsed
                 </span>
-                <span className="muted">utilization</span>
+                <p className="muted">
+                  {unplaced.reduce((sum, part) => sum + part.quantity, 0)} parts remain unplaced.
+                  Sequential heuristic; minimum sheet count is not guaranteed.
+                </p>
+                {sheets.length > 0 && (
+                  <label className="field">
+                    Sheet details and download
+                    <select
+                      value={Math.min(sheetIndex, sheets.length - 1)}
+                      onChange={(event) => {
+                        setSheetIndex(Number(event.target.value));
+                        setHover(undefined);
+                        setHighlight(undefined);
+                      }}
+                    >
+                      {sheets.map((_, index) => (
+                        <option key={index} value={index}>
+                          Sheet {index + 1}
+                          {sheets[index].job.settings.sheetStock
+                            ? ` · ${sheets[index].job.settings.sheetStock.name}`
+                            : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {unplaced.length > 0 && (
+                  <div className="notice">
+                    <strong>Unplaced parts</strong>
+                    {unplaced.map((part) => (
+                      <div key={part.partId}>
+                        {names.get(part.partId)} × {part.quantity}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              <div className="metric">
-                <span className="metric-value">
-                  {formatLength(result.usedLengthMm, unit)} <small>{unit}</small>
-                </span>
-                <span className="muted">length used</span>
-              </div>
-            </div>
-            <dl className="facts">
-              <dt>Strip</dt>
-              <dd>
-                {formatLength(width, unit)} × {formatLength(result.usedLengthMm, unit)} {unit}
-              </dd>
-              <dt>Waste</dt>
-              <dd>{formatArea(waste, unit)}</dd>
-              <dt>Placed</dt>
-              <dd>{result.placements.length} parts, all of them</dd>
-              <dt>Run</dt>
-              <dd>
-                {solution.stopReason === 'Stopped' ? 'Stopped' : 'Finished'} after{' '}
-                {formatSeconds(result.elapsedSeconds)}
-              </dd>
-            </dl>
-            {stale && (
-              <p className="notice">
-                The parts or settings changed since this run. Start nesting again to update the
-                solution.
-              </p>
             )}
-            <span className="label">Download the layout</span>
-            <div className="downloads">
-              {(['svg', 'dxf', 'pdf'] as Format[]).map((format) => (
-                <button
-                  key={format}
-                  aria-label={`Download ${format.toUpperCase()}`}
-                  disabled={!!busy}
-                  onClick={() => void exportLayout(format)}
-                >
-                  {busy === format ? 'Preparing…' : format.toUpperCase()}
-                </button>
-              ))}
-            </div>
+            {(!sheets || selectedSheet) && (
+              <>
+                <div className="metrics">
+                  <div className="metric">
+                    <span className="metric-value">
+                      {formatPercent(usedUtilization(job, result, netArea))}
+                    </span>
+                    <span className="muted">
+                      {sheets ? 'selected sheet used-area utilization' : 'utilization'}
+                    </span>
+                  </div>
+                  <div className="metric">
+                    <span className="metric-value">
+                      {formatLength(result.usedLengthMm, unit)} <small>{unit}</small>
+                    </span>
+                    <span className="muted">length used</span>
+                  </div>
+                </div>
+                <dl className="facts">
+                  <dt>{sheets ? 'Sheet' : 'Strip'}</dt>
+                  <dd>
+                    {formatLength(width, unit)} × {formatLength(sheetLength, unit)} {unit}
+                  </dd>
+                  <dt>Waste</dt>
+                  <dd>{formatArea(waste, unit)}</dd>
+                  <dt>Placed</dt>
+                  <dd>
+                    {result.placements.length} parts on this {sheets ? 'sheet' : 'strip'}
+                  </dd>
+                  <dt>Run</dt>
+                  <dd>
+                    {solution.stopReason === 'Stopped' ? 'Stopped' : 'Finished'} after{' '}
+                    {formatSeconds(solution.result.elapsedSeconds)}
+                  </dd>
+                </dl>
+                {stale && (
+                  <p className="notice">
+                    The parts or settings changed since this run. Start nesting again to update the
+                    solution.
+                  </p>
+                )}
+                <span className="label">Download the layout</span>
+                <div className="downloads">
+                  {(['svg', 'dxf', 'pdf'] as Format[]).map((format) => (
+                    <button
+                      key={format}
+                      aria-label={`Download ${format.toUpperCase()}`}
+                      disabled={!!busy}
+                      onClick={() => void exportLayout(format)}
+                    >
+                      {busy === format ? 'Preparing…' : format.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
           <div className="list-head">
-            <span className="label">Parts in this solution</span>
+            <span className="label">Parts on this {sheets ? 'sheet' : 'strip'}</span>
             {highlight && (
               <button className="small" onClick={() => setHighlight(undefined)}>
                 Show all
               </button>
             )}
           </div>
-          {placed.map((part) => (
-            <button
-              key={part.id}
-              className={part.id === highlight ? 'row selected' : 'row'}
-              aria-pressed={part.id === highlight}
-              onClick={() => setHighlight(part.id === highlight ? undefined : part.id)}
-            >
-              <PartThumb part={part} index={job.parts.indexOf(part)} />
-              <span className="row-text">
-                <span>{part.name}</span>
-                <span className="muted">
-                  {part.quantity} of {part.quantity} placed
+          {(!sheets || selectedSheet) &&
+            placed.map((part) => (
+              <button
+                key={part.id}
+                className={part.id === highlight ? 'row selected' : 'row'}
+                aria-pressed={part.id === highlight}
+                onClick={() => setHighlight(part.id === highlight ? undefined : part.id)}
+              >
+                <PartThumb part={part} index={job.parts.indexOf(part)} />
+                <span className="row-text">
+                  <span>{part.name}</span>
+                  <span className="muted">
+                    {part.quantity} of {part.quantity} placed
+                  </span>
                 </span>
-              </span>
-            </button>
-          ))}
+              </button>
+            ))}
           <div className="pad stack">
-            <ProRow>Lock placements and nest the rest again</ProRow>
-            <ProRow>Compare several solutions</ProRow>
             <button className="small" onClick={() => void diagnostics()}>
               Download diagnostics
             </button>
@@ -201,11 +285,13 @@ export function SolutionView() {
       </section>
       <Canvas
         label="Solution layout"
-        extent={[0, -width * 0.1, result.usedLengthMm * 1.05, width * 1.1]}
+        extent={sheets ? stack.extent : [0, -width * 0.1, sheetLength * 1.05, width * 1.1]}
         onBackgroundClick={() => setHighlight(undefined)}
         toolbar={
           <span className="chip">
-            Select a part type in the list to find its copies. Hover a part for details.
+            {sheets
+              ? 'All sheets of the best saved round. Select a sheet for details and downloads; select a part to highlight its copies.'
+              : 'Select a part type in the list to find its copies. Hover a part for details.'}
           </span>
         }
         overlay={
@@ -224,22 +310,69 @@ export function SolutionView() {
           )
         }
       >
-        {({ upp }) => (
-          <LayoutDrawing
-            job={job}
-            world={world}
-            usedLength={result.usedLengthMm}
-            upp={upp}
-            highlight={highlight}
-            hovered={hovered && placementKey(hovered)}
-            onPick={(part) => setHighlight(part.partId === highlight ? undefined : part.partId)}
-            onHover={(part, event) => {
-              if (!part || !event) return setHover(undefined);
-              const rect = event.currentTarget.ownerSVGElement!.getBoundingClientRect();
-              setHover({ part, x: event.clientX - rect.left, y: event.clientY - rect.top });
-            }}
-          />
-        )}
+        {({ upp }) =>
+          sheets ? (
+            sheets.map((sheet, index) => {
+              const percent = usedUtilization(sheet.job, sheet.result, netArea);
+              return (
+                <g
+                  key={index}
+                  transform={`translate(0 ${stack.positions[index].offset})`}
+                  role="group"
+                  aria-label={`Sheet ${index + 1}`}
+                >
+                  <text
+                    x={0}
+                    y={-sheet.job.settings.materialWidthMm - 16 * upp}
+                    fontSize={13 * upp}
+                    fill="var(--ink)"
+                  >
+                    {`Sheet ${index + 1}${sheet.job.settings.sheetStock ? ` · ${sheet.job.settings.sheetStock.name}` : ''} · ${sheet.result.placements.length} parts · ${formatPercent(percent)} · ${formatLength(sheet.result.usedLengthMm, unit)} ${unit} used`}
+                  </text>
+                  <LayoutDrawing
+                    job={sheet.job}
+                    world={sheetWorlds[index]}
+                    usedLength={sheet.result.usedLengthMm}
+                    upp={upp}
+                    highlight={highlight}
+                    hovered={
+                      hover?.sheetIndex === index && hovered ? placementKey(hovered) : undefined
+                    }
+                    onPick={(part) => {
+                      setSheetIndex(index);
+                      setHighlight(part.partId === highlight ? undefined : part.partId);
+                    }}
+                    onHover={(part, event) => {
+                      if (!part || !event) return setHover(undefined);
+                      const rect = event.currentTarget.ownerSVGElement!.getBoundingClientRect();
+                      setHover({
+                        part,
+                        sheetIndex: index,
+                        x: event.clientX - rect.left,
+                        y: event.clientY - rect.top,
+                      });
+                    }}
+                  />
+                </g>
+              );
+            })
+          ) : (
+            <LayoutDrawing
+              job={job}
+              world={world}
+              usedLength={result.usedLengthMm}
+              upp={upp}
+              highlight={highlight}
+              hovered={hovered && placementKey(hovered)}
+              onPick={(part) => setHighlight(part.partId === highlight ? undefined : part.partId)}
+              onHover={(part, event) => {
+                if (!part || !event) return setHover(undefined);
+                const rect = event.currentTarget.ownerSVGElement!.getBoundingClientRect();
+                setHover({ part, x: event.clientX - rect.left, y: event.clientY - rect.top });
+              }}
+            />
+          )
+        }
       </Canvas>
     </div>
   );

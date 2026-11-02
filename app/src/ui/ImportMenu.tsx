@@ -30,7 +30,11 @@ export function ImportMenu({
         Import <ChevronDown />
       </summary>
       <div className="menu-list">
-        {files && <button onClick={() => choose('files')}>Files: DXF, SVG or sparrow JSON…</button>}
+        {files && (
+          <button onClick={() => choose('files')}>
+            {kind === 'sheets' ? 'Sheet contours: DXF…' : 'Files: DXF, SVG or sparrow JSON…'}
+          </button>
+        )}
         <button onClick={() => choose('project')}>From another project…</button>
       </div>
     </details>

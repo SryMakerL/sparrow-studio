@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, newPart, type Job, type Part, type Ring } from '../model';
+import { DEFAULT_SETTINGS, newPart, type Job, type Result, type Part, type Ring } from '../model';
 import { bounds, normalizeJob, normalizeRing } from '../geometry/normalize';
 
 export type ImportReview = { document: Job; warnings: string[]; issues?:string[]; layers?:string[] };
@@ -48,9 +48,25 @@ export function importSparrow(text: string,fileName: string,scale: number): Impo
       `One coordinate unit = ${scale} mm. Benchmark coordinates have no intrinsic manufacturing units.`,
       ...(parts.some(p=>p.holes.length)?['Holes are preserved; nesting inside holes is not supported.']:[])]};
 }
-export function solverInput(doc: Job): string {
+export function solverInput(doc: Job, initialPlacement?: Result): string {
   if(!doc.parts.some(part=>part.quantity>0))throw Error('Add at least one copy before nesting.');
-  return JSON.stringify({name:doc.name,strip_height:doc.settings.materialWidthMm,items:doc.parts.filter(part=>part.quantity>0).map((p,id)=>({
+  const parts = doc.parts.filter(part=>part.quantity>0);
+  const ids = new Map(parts.map((part, id) => [part.id, id]));
+  const initial = initialPlacement ? {
+    used_length_mm: initialPlacement.usedLengthMm,
+    placements: initialPlacement.placements.map(placement => {
+      const item_id = ids.get(placement.partId);
+      if (item_id === undefined) throw Error('Initial placement contains a part outside the current job.');
+      return { item_id, rotation: placement.angleDeg, translation: [placement.xMm, placement.yMm] };
+    }),
+  } : undefined;
+  return JSON.stringify({name:doc.name,strip_height:doc.settings.materialWidthMm,
+    initial_placement:initial,
+    stock_length:initial ? doc.settings.sheetLengthMm : undefined,
+    stock_geometry:doc.settings.sheetStock?.kind==='polygon'?{
+      outer:doc.settings.sheetStock.outer,holes:doc.settings.sheetStock.holes,
+    }:undefined,
+    items:doc.parts.filter(part=>part.quantity>0).map((p,id)=>({
     id,demand:p.quantity,allowed_orientations:p.rotations.kind==='continuous'?undefined:p.rotations.degrees,
     shape:{type:'simple_polygon',data:p.outer},
   }))});

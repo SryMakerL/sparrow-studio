@@ -177,7 +177,7 @@ export function importDXF(text:string,fileName:string,options:DXFOptions):Import
   const byHandle=new Map(records.map(r=>[r.id,r])),blocks=new Map(parsed.blocks.map(b=>[b.name,b]));
   const supported=['LINE','ARC','CIRCLE','ELLIPSE','LWPOLYLINE','POLYLINE','SPLINE','INSERT'];
   for(const r of records)if(!supported.includes(r.type)&&!['BLOCK','ENDBLK'].includes(r.type))unsupported.set(r.type,(unsupported.get(r.type)??0)+1);
-  const layers:string[]=[],contours:Contour[]=[],chains:Chain[]=[];let totalVertices=0,expanded=0;
+  const layers:string[]=[],contours:Contour[]=[],chains:Chain[]=[];let totalVertices=0,expanded=0,zeroLengthLines=0;
   const visit=(entity:DxfEntity,parent:Matrix,inheritedLayer:string,path:string[])=>{
     if(++expanded>10_000)throw Error('DXF exceeds 10,000 expanded entities.');
     const r=byHandle.get(entity.handle);if(!r||!supported.includes(entity.type))return;
@@ -212,7 +212,11 @@ export function importDXF(text:string,fileName:string,options:DXFOptions):Import
         return [p.x,p.y];
       };
       let ring:Ring,closed=false,curved=false;
-      if(entity.type==='LINE')ring=[point(entity.start),point(entity.end)];
+      if(entity.type==='LINE') {
+        const start=point(entity.start),end=point(entity.end);
+        if(start[0]===end[0]&&start[1]===end[1]) {zeroLengthLines++;return;}
+        ring=[start,end];
+      }
       else if(entity.type==='SPLINE'){ring=spline(entity,tolerance);curved=true;}
       else if(['ARC','CIRCLE','ELLIPSE'].includes(entity.type)) {
         const center=point({x:entity.x!,y:entity.y!});let u:Point,v:Point;
@@ -245,6 +249,7 @@ export function importDXF(text:string,fileName:string,options:DXFOptions):Import
     }catch(error){if(expanded>10_000||totalVertices>100_000)throw error;issues.push(`${r.id} on ${layer}: ${error instanceof Error?error.message:String(error)}`);}
   };
   for(const entity of parsed.entities)visit(entity,[scale,0,0,scale,0,0],'0',[]);
+  if(zeroLengthLines)warnings.push(`Skipped ${zeroLengthLines} strictly zero-length LINE entities.`);
   layers.sort();
   const joined=join(chains,issues);contours.push(...joined.contours);
   if(joined.gaps)warnings.push(`Joined ${joined.gaps} gaps within 0.01 mm; largest endpoint adjustment ${joined.adjustment} mm. Confirm this preview before importing.`);

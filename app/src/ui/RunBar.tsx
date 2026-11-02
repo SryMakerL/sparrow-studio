@@ -1,4 +1,4 @@
-import { copyCount, startBlockers } from '../project/model';
+import { copyCount, stockSheets, startBlockers } from '../project/model';
 import { useStudio } from './context';
 import { formatLength, formatSeconds } from './format';
 
@@ -30,7 +30,7 @@ export function RunBar() {
       <span className={blockers.length ? 'run-blocker' : 'muted'}>
         {blockers.length
           ? blockers[0]
-          : `${copies} ${copies === 1 ? 'part' : 'parts'} · strip ${formatLength(project.stock.strip.widthMm, unit)} ${unit} wide · solved in this browser`}
+          : `${copies} ${copies === 1 ? 'part' : 'parts'} · ${project.stock.packing === 'sheets' ? `${stockSheets(project.stock).length} stock types, ${stockSheets(project.stock).reduce((sum, sheet) => sum + sheet.quantity, 0)} sheets · priority order` : `strip ${formatLength(project.stock.strip.widthMm, unit)} ${unit} wide`} · solved in this browser`}
       </span>
     </div>
   );

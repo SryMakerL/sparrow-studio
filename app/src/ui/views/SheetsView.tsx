@@ -1,9 +1,10 @@
 import { useId, useState } from 'react';
 import { netArea } from '../../engine/geometry/validate';
-import { LIMITS } from '../../engine/model';
+import { LIMITS, newId, type SheetStock } from '../../engine/model';
+import { stockSheets } from '../../project/model';
+import { ringsPath } from '../Canvas';
 import type { DisplayUnit } from '../../engine/units';
 import { Canvas } from '../Canvas';
-import { ProRow, ProTag } from '../ProTag';
 import { useStudio } from '../context';
 import { formatLength } from '../format';
 import { ImportMenu } from '../ImportMenu';
@@ -17,7 +18,32 @@ export function SheetsView() {
   const width = Number.isFinite(strip.widthMm) && strip.widthMm > 0 ? strip.widthMm : 1000;
   const area = project.parts.reduce((sum, part) => sum + netArea(part) * part.quantity, 0);
   // An impression of the length, not a promise: the solver finds the real one.
-  const shown = Math.max(width * 1.6, (area / width) * 1.3);
+  const sheets = project.stock.packing === 'sheets' ? project.stock : undefined;
+  const inventory = stockSheets(project.stock);
+  const [selectedId, setSelectedId] = useState<string>();
+  const selected = inventory.find((sheet) => sheet.id === selectedId) ?? inventory[0];
+  const setInventory = (items: SheetStock[]) =>
+    edit((current) => ({
+      ...current,
+      stock: {
+        packing: 'sheets',
+        strip: {
+          ...current.stock.strip,
+          widthMm: items[0]?.widthMm ?? current.stock.strip.widthMm,
+        },
+        lengthMm: items[0]?.lengthMm ?? 2440,
+        quantity: items.reduce((sum, item) => sum + item.quantity, 0),
+        sheets: items,
+      },
+    }));
+  const updateSheet = (change: Partial<SheetStock>) =>
+    setInventory(
+      inventory.map((sheet) =>
+        sheet.id === selected?.id ? ({ ...sheet, ...change } as SheetStock) : sheet,
+      ),
+    );
+  const shown = sheets ? (selected?.lengthMm ?? 2440) : Math.max(width * 1.6, (area / width) * 1.3);
+  const shownWidth = sheets ? (selected?.widthMm ?? width) : width;
   const updateStrip = (change: Partial<typeof strip>, key: string) =>
     edit(
       (current) => ({
@@ -30,64 +56,231 @@ export function SheetsView() {
     <div className="view">
       <section className="list-panel" aria-label="Sheets">
         <div className="segmented" role="group" aria-label="Packing">
-          <button aria-pressed="true">Strip</button>
-          <ProTag label="Sheets · sparrow pro" />
+          <button
+            aria-pressed={!sheets}
+            onClick={() =>
+              edit((current) => ({
+                ...current,
+                stock: { packing: 'strip', strip: current.stock.strip },
+              }))
+            }
+          >
+            Strip
+          </button>
+          <button
+            aria-pressed={!!sheets}
+            onClick={() =>
+              edit((current) => ({
+                ...current,
+                stock:
+                  current.stock.packing === 'sheets'
+                    ? current.stock
+                    : {
+                        packing: 'sheets',
+                        strip: current.stock.strip,
+                        lengthMm: 2440,
+                        quantity: 10,
+                      },
+              }))
+            }
+          >
+            Sheets
+          </button>
         </div>
         <p className="muted pad">
-          Parts nest into one strip of fixed width. The solver minimizes the length used. Sheets,
-          remnants and irregular sheets need sparrow pro.
+          {sheets
+            ? 'Add rectangular stock or import DXF sheet contours. Higher priority numbers are tried first; equal priorities use list order. Polygon holes are unavailable material. Sparrow treats the outer complement and holes as fixed obstacles. Irregular packing is heuristic; narrow-stock fallback uses sampled free rotations.'
+            : 'Parts nest into one strip of fixed width. The solver minimizes the length used.'}
         </p>
         <div className="list-head">
-          <span className="label">Strip</span>
-          <ImportMenu kind="sheets" files={false} />
+          <span className="label">{sheets ? 'Sheet inventory' : 'Strip'}</span>
+          <ImportMenu kind="sheets" files={!!sheets} />
         </div>
         <div className="list-scroll">
-          <button
-            className={open ? 'row selected' : 'row'}
-            aria-expanded={open}
-            onClick={() => setOpen(!open)}
-          >
-            <svg className="thumb" viewBox="0 0 36 36" aria-hidden="true">
-              <rect x="2" y="11" width="32" height="14" className="strip-thumb" />
-            </svg>
-            <span className="row-text">
-              <span>{strip.name}</span>
-              <span className="muted mono">
-                {formatLength(strip.widthMm, unit)} {unit} wide · length open
-              </span>
-            </span>
-          </button>
-          {open && (
-            <div className="properties">
-              <label className="field">
-                Name
-                <input
-                  value={strip.name}
-                  onChange={(event) => updateStrip({ name: event.target.value }, 'strip-name')}
-                />
-              </label>
-              <LengthInput
-                label="Width"
-                value={strip.widthMm}
-                min={0}
-                max={LIMITS.extent}
-                onChange={(widthMm) => updateStrip({ widthMm }, 'strip-width')}
-              />
-              <div className="field">
-                Length
-                <span className="muted">Open: the solver minimizes it.</span>
+          {sheets ? (
+            <>
+              <div className="pad">
+                <button
+                  onClick={() => {
+                    const sheet: SheetStock = {
+                      id: newId(),
+                      name: `Rectangle ${inventory.length + 1}`,
+                      kind: 'rectangle',
+                      widthMm: 1220,
+                      lengthMm: 2440,
+                      quantity: 1,
+                      priority: 0,
+                    };
+                    setInventory([...inventory, sheet]);
+                    setSelectedId(sheet.id);
+                  }}
+                >
+                  Add rectangle
+                </button>
               </div>
-              <ProRow>Defects and clamp zones</ProRow>
-            </div>
+              {inventory.map((sheet) => (
+                <button
+                  key={sheet.id}
+                  className={sheet.id === selected?.id ? 'row selected' : 'row'}
+                  onClick={() => setSelectedId(sheet.id)}
+                >
+                  <span className="row-text">
+                    <span>{sheet.name}</span>
+                    <span className="muted mono">
+                      {sheet.kind === 'polygon' ? 'Irregular' : 'Rectangle'} ·{' '}
+                      {formatLength(sheet.widthMm, unit)} × {formatLength(sheet.lengthMm, unit)}{' '}
+                      {unit} · ×{sheet.quantity} · priority {sheet.priority}
+                    </span>
+                  </span>
+                </button>
+              ))}
+              {selected ? (
+                <div className="properties" key={selected.id}>
+                  <label className="field">
+                    Name
+                    <input
+                      value={selected.name}
+                      onChange={(event) => updateSheet({ name: event.target.value })}
+                    />
+                  </label>
+                  {selected.kind === 'rectangle' ? (
+                    <>
+                      <LengthInput
+                        label="Width"
+                        value={selected.widthMm}
+                        min={0}
+                        max={LIMITS.extent}
+                        onChange={(widthMm) => updateSheet({ widthMm })}
+                      />
+                      <LengthInput
+                        label="Length"
+                        value={selected.lengthMm}
+                        min={0}
+                        max={LIMITS.extent}
+                        onChange={(lengthMm) => updateSheet({ lengthMm })}
+                      />
+                    </>
+                  ) : (
+                    <p className="muted">
+                      DXF contour · {selected.outer.length} outer vertices · {selected.holes.length}{' '}
+                      holes. Dimensions follow the imported geometry.
+                    </p>
+                  )}
+                  <label className="field">
+                    Available sheets
+                    <input
+                      type="number"
+                      min={1}
+                      max={500}
+                      step={1}
+                      value={selected.quantity}
+                      onChange={(event) => {
+                        const quantity = Number(event.target.value);
+                        if (Number.isInteger(quantity) && quantity >= 1 && quantity <= 500)
+                          updateSheet({ quantity });
+                      }}
+                    />
+                  </label>
+                  <label className="field">
+                    Priority (higher first)
+                    <input
+                      type="number"
+                      min={0}
+                      max={999}
+                      step={1}
+                      value={selected.priority}
+                      onChange={(event) => {
+                        const priority = Number(event.target.value);
+                        if (Number.isInteger(priority) && priority >= 0 && priority <= 999)
+                          updateSheet({ priority });
+                      }}
+                    />
+                  </label>
+                  <button
+                    onClick={() =>
+                      setInventory(inventory.filter((sheet) => sheet.id !== selected.id))
+                    }
+                  >
+                    Remove stock
+                  </button>
+                </div>
+              ) : (
+                <p className="empty">Add a rectangle or import DXF sheet contours.</p>
+              )}
+            </>
+          ) : (
+            <>
+              <button
+                className={open ? 'row selected' : 'row'}
+                aria-expanded={open}
+                onClick={() => setOpen(!open)}
+              >
+                <svg className="thumb" viewBox="0 0 36 36" aria-hidden="true">
+                  <rect x="2" y="11" width="32" height="14" className="strip-thumb" />
+                </svg>
+                <span className="row-text">
+                  <span>{strip.name}</span>
+                  <span className="muted mono">
+                    {formatLength(strip.widthMm, unit)} {unit} wide · length open
+                  </span>
+                </span>
+              </button>
+              {open && (
+                <div className="properties">
+                  <label className="field">
+                    Name
+                    <input
+                      value={strip.name}
+                      onChange={(event) => updateStrip({ name: event.target.value }, 'strip-name')}
+                    />
+                  </label>
+                  <LengthInput
+                    label="Width"
+                    value={strip.widthMm}
+                    min={0}
+                    max={LIMITS.extent}
+                    onChange={(widthMm) => updateStrip({ widthMm }, 'strip-width')}
+                  />
+                  <div className="field">
+                    Length
+                    <span className="muted">Open: the solver minimizes it.</span>
+                  </div>
+                </div>
+              )}
+            </>
           )}
-          <div className="pad">
-            <ProRow>Add sheets, in nesting order</ProRow>
-          </div>
         </div>
         <RunBar />
       </section>
-      <Canvas label="The strip" extent={[-width * 0.15, -width * 0.25, shown, width * 1.15]}>
-        {({ upp }) => <StripDrawing width={width} length={shown} upp={upp} unit={unit} />}
+      <Canvas
+        label={sheets ? 'Rectangular sheet' : 'The strip'}
+        extent={[-shownWidth * 0.15, -shownWidth * 0.25, shown, shownWidth * 1.15]}
+      >
+        {({ upp }) =>
+          sheets ? (
+            selected?.kind === 'polygon' ? (
+              <path
+                d={ringsPath([selected.outer, ...selected.holes])}
+                fillRule="evenodd"
+                fill="var(--sheet)"
+                className="sheet-edge"
+                strokeWidth={2 * upp}
+              />
+            ) : selected ? (
+              <rect
+                x={0}
+                y={-shownWidth}
+                width={shown}
+                height={shownWidth}
+                fill="var(--sheet)"
+                className="sheet-edge"
+                strokeWidth={2 * upp}
+              />
+            ) : null
+          ) : (
+            <StripDrawing width={width} length={shown} upp={upp} unit={unit} />
+          )
+        }
       </Canvas>
     </div>
   );

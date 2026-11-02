@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { newId } from '../../engine/model';
 import { activeMachine, newMachine, type MachinePreset } from '../../project/model';
-import { ProRow } from '../ProTag';
 import { useStudio } from '../context';
 import { formatLength } from '../format';
 import { ImportMenu } from '../ImportMenu';
@@ -95,8 +94,6 @@ export function MachineView() {
                   <span className="muted">
                     In the browser, sparrow keeps the same gap at the strip edges.
                   </span>
-                  <ProRow>Separate distance to the sheet boundary</ProRow>
-                  <ProRow>Machine bed and clamps</ProRow>
                   <div className="row-actions wrap">
                     {chosen.id !== project.machineId && (
                       <button
@@ -164,8 +161,7 @@ export function MachineView() {
         </p>
         <p className="muted">
           A machine preset holds the settings that belong to a machine, so you can reuse them across
-          projects. sparrow pro adds the machine bed, clamp zones and a separate distance to the
-          sheet boundary.
+          projects.
         </p>
       </Explanation>
     </div>

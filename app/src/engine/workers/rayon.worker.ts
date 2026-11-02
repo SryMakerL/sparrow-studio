@@ -4,10 +4,10 @@ self.onmessage = async ({ data }) => {
   self.onmessage = null;
   try {
     const wasm = await loadThreadedWasm();
-    await wasm.default(data.init);
+    await wasm.default({ ...data.init, thread_stack_size: 8 * 1024 * 1024 });
     self.postMessage({ type: 'ready' });
     wasm.wbg_rayon_start_worker(data.receiver);
   } catch (error) {
-    self.postMessage({ type: 'error', message: String(error) });
+    self.postMessage({ type: 'error', message: error instanceof Error ? (error.stack ?? String(error)) : String(error) });
   }
 };

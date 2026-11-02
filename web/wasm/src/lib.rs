@@ -25,6 +25,10 @@ pub fn thread_count() -> usize {
 
 mod svg;
 mod logging;
+mod stock;
+mod warm_start;
+mod session;
+pub use session::SheetSession;
 
 #[cfg(feature = "benchmark")]
 pub mod benchmark;
@@ -92,6 +96,7 @@ pub fn run(input: &str, seconds: Option<u32>, seed: &str, clearance: f32, preset
         || external.items.iter().map(|item| item.demand).sum::<u64>() > 500 {
         return Err(JsValue::from_str("Invalid strip dimensions or demand"));
     }
+    let constraints = stock::parse(input, external.strip_height).map_err(|e| JsValue::from_str(&e))?;
     let mut config = solver_config(preset, thread_count(), seconds).map_err(JsValue::from_str)?;
     config.min_item_separation = (clearance > 0.0).then_some(clearance);
     callback.call1(&JsValue::NULL, &JsValue::from_str(&json!({
@@ -100,12 +105,24 @@ pub fn run(input: &str, seconds: Option<u32>, seed: &str, clearance: f32, preset
     let importer = Importer::new(config.cde_config, config.poly_simpl_tolerance, config.min_item_separation, config.narrow_concavity_cutoff_ratio);
     let instance = import_instance(&importer, &external)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let instance = stock::apply(instance, constraints).map_err(|e| JsValue::from_str(&e))?;
+    let warm_input = warm_start::parse(input).map_err(|e| JsValue::from_str(&e))?;
+    let instance = warm_start::apply_stock_length(instance, &warm_input).map_err(|e| JsValue::from_str(&e))?;
+    let initial_solution = warm_start::construct(&instance, &warm_input, Xoshiro256PlusPlus::seed_from_u64(seed))
+        .map_err(|e| JsValue::from_str(&e))?;
+    if let Some(solution) = &initial_solution {
+        callback.call1(&JsValue::NULL, &JsValue::from_str(&json!({
+            "type": "candidate", "sequence": 0, "report": "WarmStart",
+            "elapsedMs": initialized_at.elapsed().as_secs_f64() * 1000.0,
+            "solution": export(&instance, solution, initialized_at)
+        }).to_string())).expect("worker callback must accept solver messages");
+    }
     let mut listener = Listener { callback, initialized_at, solve_started_at: None, sequence: 0, last_snapshot: None,
         exploration_workers: config.expl_cfg.separator_config.n_workers,
         compression_workers: config.cmpr_cfg.separator_config.n_workers };
     let mut terminator = WebTerminator { timed: seconds.is_some(), inner: BasicTerminator::new(), interrupt };
     optimize(instance, Xoshiro256PlusPlus::seed_from_u64(seed), &mut listener,
-        &mut terminator, &config.expl_cfg, &config.cmpr_cfg, None)
+        &mut terminator, &config.expl_cfg, &config.cmpr_cfg, initial_solution.as_ref())
     .map_err(|error| JsValue::from_str(&format!("No valid initial placement could be constructed for item {}. Review the part size, allowed rotations, material width, and clearance.", error.item_id)))?;
     listener.send(json!({"type": "finished"}));
     Ok(())

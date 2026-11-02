@@ -4,6 +4,7 @@ import { parseProject, projectFileName, serializeProject } from '../src/project/
 import { arrangeParts } from '../src/project/layout';
 import {
   addParts,
+  nameImportedParts,
   commonRotations,
   differsFromDefaults,
   jobKey,
@@ -29,6 +30,21 @@ const square = (size: number, quantity = 1): Part => ({
 });
 
 describe('project document', () => {
+  it('numbers imported part types across batches without changing existing parts or sources', () => {
+    const first = nameImportedParts([], [square(10, 40), square(20)]);
+    expect(first.map((part) => part.name)).toEqual(['001', '002']);
+    const next = nameImportedParts(
+      [...first, { name: '010' }, { name: 'Bracket' }],
+      [square(30), square(40)],
+    );
+    expect(next.map((part) => part.name)).toEqual(['011', '012']);
+    expect(next[0].quantity).toBe(1);
+    expect(first[0].quantity).toBe(40);
+    expect(first[0].source).toEqual(square(10).source);
+    expect(nameImportedParts([{ name: '999' }], [square(1)])[0].name).toBe('1000');
+    expect(first.map((part) => part.name)).toEqual(['001', '002']);
+  });
+
   it('round-trips through a project file', () => {
     const project = addParts(newProject('Shop job'), [square(10, 3)]);
     expect(parseProject(JSON.parse(serializeProject(project)))).toEqual(project);

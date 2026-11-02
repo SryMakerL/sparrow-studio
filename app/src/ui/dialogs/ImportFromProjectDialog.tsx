@@ -2,21 +2,22 @@ import { useEffect, useState } from 'react';
 import type { Part } from '../../engine/model';
 import {
   resolvedParts,
+  stockSheets,
   type MachinePreset,
   type ProjectDocument,
-  type Strip,
+  type Stock,
 } from '../../project/model';
 import { browserStore, type ProjectSummary } from '../../project/store';
 import { useStudio } from '../context';
 import { Dialog } from '../Dialog';
 import { formatLength } from '../format';
 
-export type ProjectImport = { parts: Part[]; strip?: Strip; machines: MachinePreset[] };
+export type ProjectImport = { parts: Part[]; stock?: Stock; machines: MachinePreset[] };
 type Kind = 'parts' | 'sheets' | 'machines';
 
 const TITLES: Record<Kind, string> = {
   parts: 'Import parts from another project',
-  sheets: 'Import the strip from another project',
+  sheets: 'Import stock from another project',
   machines: 'Import machine presets from another project',
 };
 
@@ -54,7 +55,9 @@ export function ImportFromProjectDialog({
           ? stored.document.parts.map((part) => part.id)
           : kind === 'machines'
             ? stored.document.machines.map((machine) => machine.id)
-            : [stored.document.stock.strip.id];
+            : stored.document.stock.packing === 'sheets'
+              ? stockSheets(stored.document.stock).map((sheet) => sheet.id)
+              : [stored.document.stock.strip.id];
       setChosen(new Set(items));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -77,13 +80,19 @@ export function ImportFromProjectDialog({
             label: machine.name,
             detail: `gap ${formatLength(machine.gapMm, unit, 3)} ${unit}`,
           }))
-        : [
-            {
-              id: source.stock.strip.id,
-              label: source.stock.strip.name,
-              detail: `${formatLength(source.stock.strip.widthMm, unit)} ${unit} wide`,
-            },
-          ];
+        : source.stock.packing === 'sheets'
+          ? stockSheets(source.stock).map((sheet) => ({
+              id: sheet.id,
+              label: sheet.name,
+              detail: `${sheet.kind} · ${formatLength(sheet.widthMm, unit)} × ${formatLength(sheet.lengthMm, unit)} ${unit} · ×${sheet.quantity} · priority ${sheet.priority}`,
+            }))
+          : [
+              {
+                id: source.stock.strip.id,
+                label: source.stock.strip.name,
+                detail: `${formatLength(source.stock.strip.widthMm, unit)} ${unit} wide · open length`,
+              },
+            ];
 
   return (
     <Dialog
@@ -104,7 +113,17 @@ export function ImportFromProjectDialog({
                     kind === 'parts'
                       ? resolvedParts(source).filter((part) => chosen.has(part.id))
                       : [],
-                  strip: kind === 'sheets' && chosen.size ? source.stock.strip : undefined,
+                  stock:
+                    kind === 'sheets' && chosen.size
+                      ? source.stock.packing === 'sheets'
+                        ? {
+                            ...source.stock,
+                            sheets: stockSheets(source.stock).filter((sheet) =>
+                              chosen.has(sheet.id),
+                            ),
+                          }
+                        : source.stock
+                      : undefined,
                   machines:
                     kind === 'machines'
                       ? source.machines.filter((machine) => chosen.has(machine.id))
@@ -112,7 +131,7 @@ export function ImportFromProjectDialog({
                 })
               }
             >
-              {kind === 'sheets' ? 'Use this strip' : `Import ${chosen.size}`}
+              {kind === 'sheets' ? 'Use this stock' : `Import ${chosen.size}`}
             </button>
           )}
         </>
@@ -163,7 +182,7 @@ export function ImportFromProjectDialog({
               <li key={item.id}>
                 <label className="choice">
                   <input
-                    type={kind === 'sheets' ? 'radio' : 'checkbox'}
+                    type="checkbox"
                     checked={chosen.has(item.id)}
                     onChange={() => toggle(item.id)}
                   />
@@ -174,7 +193,9 @@ export function ImportFromProjectDialog({
             ))}
           </ul>
           {kind === 'sheets' && (
-            <p className="muted">The strip replaces the current strip width and name.</p>
+            <p className="muted">
+              The stock replaces the current material dimensions, mode and available quantity.
+            </p>
           )}
         </>
       )}

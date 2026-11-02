@@ -1,7 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Preset, TimeLimit } from '../../engine/model';
 import { TIME_LIMITS, type SolverSettings, type Threads } from '../../project/model';
-import { ProTag } from '../ProTag';
 import { useStudio } from '../context';
 import { RunBar } from '../RunBar';
 import { Explanation } from './Explanation';
@@ -24,7 +23,7 @@ export function SettingsView() {
   const update = (change: Partial<SolverSettings>) =>
     edit((current) => ({ ...current, settings: { ...current.settings, ...change } }));
   const items: { id: Item; name: string; summary: string }[] = [
-    { id: 'solve', name: 'Solve with', summary: 'Local: in this browser' },
+    { id: 'solve', name: 'Solver', summary: 'Local: in this browser' },
     { id: 'time', name: 'Time and stopping', summary: timeLabel(settings.timeLimitSeconds) },
     {
       id: 'search',
@@ -55,48 +54,38 @@ export function SettingsView() {
               {item.id === selected && (
                 <div className="properties">
                   {item.id === 'solve' && (
-                    <>
-                      <label className="choice">
-                        <input type="radio" name="solve-with" checked readOnly />
-                        <span>
-                          Local: in this browser
-                          <span className="muted block">
-                            Free, no account. One strip of open length.
-                          </span>
-                        </span>
-                      </label>
-                      <div className="choice disabled">
-                        <input type="radio" name="solve-with" disabled aria-label="sparrow pro" />
-                        <span className="grow">
-                          sparrow pro
-                          <span className="muted block">
-                            Sheets, remnants, defects, clamps and reflection.
-                          </span>
-                        </span>
-                        <ProTag />
-                      </div>
-                    </>
+                    <p className="muted">
+                      Runs locally in this browser. No account or server is required.
+                    </p>
                   )}
                   {item.id === 'time' && (
-                    <label className="field">
-                      Stop condition
-                      <select
-                        value={String(settings.timeLimitSeconds)}
-                        onChange={(event) =>
-                          update({
-                            timeLimitSeconds: (event.target.value === 'null'
-                              ? null
-                              : Number(event.target.value)) as TimeLimit,
-                          })
-                        }
-                      >
-                        {TIME_LIMITS.map((limit) => (
-                          <option key={String(limit)} value={String(limit)}>
-                            {timeLabel(limit)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <>
+                      <label className="field">
+                        Stop condition
+                        <select
+                          value={String(settings.timeLimitSeconds)}
+                          onChange={(event) =>
+                            update({
+                              timeLimitSeconds: (event.target.value === 'null'
+                                ? null
+                                : Number(event.target.value)) as TimeLimit,
+                            })
+                          }
+                        >
+                          {TIME_LIMITS.map((limit) => (
+                            <option key={String(limit)} value={String(limit)}>
+                              {timeLabel(limit)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {project.stock.packing === 'sheets' && (
+                        <SheetTimeoutInput
+                          seconds={settings.sheetStagnationSeconds}
+                          onChange={(sheetStagnationSeconds) => update({ sheetStagnationSeconds })}
+                        />
+                      )}
+                    </>
                   )}
                   {item.id === 'search' && (
                     <label className="field">
@@ -145,25 +134,46 @@ export function SettingsView() {
   );
 }
 
+function SheetTimeoutInput({
+  seconds,
+  onChange,
+}: {
+  seconds: number;
+  onChange: (seconds: number) => void;
+}) {
+  const [text, setText] = useState(String(seconds));
+  useEffect(() => setText(String(seconds)), [seconds]);
+  const value = Number(text);
+  const valid = text.trim() !== '' && Number.isInteger(value) && value >= 1 && value <= 600;
+  return (
+    <label className="field">
+      Sheet no-improvement timeout, seconds
+      <input
+        type="number"
+        min={1}
+        max={600}
+        step={1}
+        value={text}
+        aria-invalid={!valid}
+        onChange={(event) => {
+          const next = event.target.value;
+          setText(next);
+          const number = Number(next);
+          if (next.trim() !== '' && Number.isInteger(number) && number >= 1 && number <= 600)
+            onChange(number);
+        }}
+      />
+      <span className="muted">Default: 15 seconds. The total time limit takes priority.</span>
+    </label>
+  );
+}
+
 function SettingsExplanation({ item }: { item: Item }) {
   if (item === 'solve')
     return (
-      <Explanation title="Local or sparrow pro">
-        <div className="compare">
-          <div>
-            <strong>Local</strong>
-            <span>Runs sparrow on your computer, in this browser.</span>
-            <span>Free, no account.</span>
-            <span>One strip of open length.</span>
-          </div>
-          <div>
-            <strong>sparrow pro</strong>
-            <span>Runs on sparrow pro, the hosted solver. Needs signing in.</span>
-            <span>Sheets in order, remnants and irregular sheets.</span>
-            <span>Defects, clamps and reflection.</span>
-          </div>
-        </div>
-        <p className="muted">The same project can be solved either way.</p>
+      <Explanation title="Local solver">
+        <p>Runs sparrow on your computer, in this browser. Free, no account.</p>
+        <p>Supports open-length strips, mixed rectangular sheets and DXF irregular stock.</p>
       </Explanation>
     );
   if (item === 'time')
@@ -173,6 +183,17 @@ function SettingsExplanation({ item }: { item: Item }) {
           Automatic keeps searching while the layout still improves, then stops. A time limit stops
           at the limit at the latest. You can stop any run yourself; the best valid layout found so
           far is kept.
+        </p>
+        <p className="muted">
+          In rectangular sheet mode, the selected time is the total search budget for all sheets.
+          Earlier sheets are filled and compressed first. A sheet advances only after the configured
+          no-improvement timeout (default: 15 seconds) without an improvement in its used-area
+          utilization. An improvement restarts that timer. After all sheets are processed,
+          partitioning restarts from the first sheet. The total time limit and manual Stop take
+          priority, so a short total budget may expire before later sheets are processed. The best
+          validated plan prioritizes fewer unplaced parts, higher-priority stock use, fewer sheets,
+          more parts on earlier sheets, then a shorter combined used length. Automatic stops after 3
+          rounds without improvement.
         </p>
         <p className="muted">
           Settings apply to the next run. They do not change the current solution.

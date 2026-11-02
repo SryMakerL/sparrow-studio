@@ -1,3 +1,4 @@
+import { useSheetSolver } from './useSheetSolver';
 import type { SolverBinary } from '../wasm';
 import { useEffect, useRef, useState } from 'react';
 import { SOLVER_REVISION, type Job, type Result } from '../model';
@@ -32,7 +33,7 @@ export function phaseImprovements(history:Timing[],lengthMm:number) {
   const explored=Math.min(...exploration.map(entry=>entry.lengthMm));
   return {explore:(1-explored/first.lengthMm)*100,compress:Math.max(0,(1-lengthMm/explored)*100)};
 }
-export function useSolver() {
+function useStripSolver() {
   const [state,setState]=useState<RunState>('Ready'),[result,setResult]=useState<Result>(),[elapsed,setElapsed]=useState(0),[error,setError]=useState('');
   const [phase,setPhase]=useState<string>(),[skipping,setSkipping]=useState(false),[canSkip,setCanSkip]=useState(false);
   const [live,setLive]=useState<LiveFrame>(),[liveError,setLiveError]=useState('');
@@ -148,5 +149,22 @@ export function useSolver() {
     setSkipping(true);r.diagnostics.compressionRequestedMs=r.startedAt?performance.now()-r.startedAt:0;
     r.solver.postMessage({type:'skip'});
   }
-  return {job,phase,canSkip,skipping,skipToCompression,state,workers,result,live,liveError,elapsed,error,start,stop:()=>end('Stopped'),invalidate,load,diagnostics};
+  return {job,phase,canSkip,skipping,skipToCompression,state,workers,result,currentResult:result,live,liveError,elapsed,error,start,stop:()=>end('Stopped'),invalidate,load,diagnostics};
+}
+export function useSolver() {
+  const strip = useStripSolver(), sheets = useSheetSolver();
+  const [mode, setMode] = useState<'strip' | 'sheets'>('strip');
+  return { ...strip, ...(mode === 'sheets' ? sheets : {}),
+    start: (doc: Job, revision: number, threads?: number, requestedAt?: number) => {
+      strip.invalidate(); sheets.invalidate();
+      if (doc.settings.sheetCount !== undefined) { setMode('sheets'); sheets.start(doc, revision, threads); }
+      else { setMode('strip'); strip.start(doc, revision, threads, requestedAt); }
+    },
+    invalidate: () => { strip.invalidate(); sheets.invalidate(); },
+    load: (checked: Result) => {
+      strip.invalidate(); sheets.invalidate();
+      if (checked.sheets) { setMode('sheets'); sheets.load(checked); }
+      else { setMode('strip'); strip.load(checked); }
+    },
+  };
 }

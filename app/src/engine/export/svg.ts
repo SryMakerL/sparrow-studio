@@ -4,20 +4,25 @@ import { exportDXF, STUDIO_CREDIT } from './dxf';
 import {DOMImplementation,DOMParser,XMLSerializer,type Element} from '@xmldom/xmldom';
 import {pathData} from '../geometry/path';
 import {colors} from '../colors';
+import {stockArea} from '../stock';
+import {SHEET_LAYER} from '../model';
 const SVG_NS='http://www.w3.org/2000/svg';
 export type ExportBundle = { svg: string; dxf:string; world: WorldPart[] };
 export function exportSVG(doc: Job,result: Result): ExportBundle {
+  if(result.sheets) throw Error('Export each sheet separately, not the aggregate.');
   if(result.validation.status!=='passed') throw Error('Only a valid result can be exported.');
   // JS's shortest round-trip decimal preserves each f64 exactly. Both formats
   // consume these same numbers, including every hole, without display rounding.
   const world=JSON.parse(JSON.stringify(worldParts(doc,result))) as WorldPart[];
   if(world.some(part=>[part.outer,...part.holes].some(ring=>ring.some(point=>point.some(value=>!Number.isFinite(value))))))throw Error('Layout contains invalid coordinates.');
+  const stock=doc.settings.sheetStock;
+  const sheet=stock?.kind==='polygon'?[stock.outer,...stock.holes]:undefined;
   const height=doc.settings.materialWidthMm;
-  const width=result.usedLengthMm;
+  const width=doc.settings.sheetLengthMm ?? result.usedLengthMm;
   const left=0,top=0,frameWidth=width,frameHeight=height;
   const padX=frameWidth*.05,padY=frameHeight*.05,pageWidth=frameWidth+2*padX,pageHeight=frameHeight+2*padY;
   const viewBox=`${left-padX} ${top-padY} ${pageWidth} ${pageHeight}`;
-  const utilization=doc.parts.reduce((sum,part)=>sum+netArea(part)*part.quantity,0)/(width*height)*100;
+  const utilization=doc.parts.reduce((sum,part)=>sum+netArea(part)*part.quantity,0)/(stock?stockArea(stock):width*height)*100;
   const summary=`${doc.name} · ${Number(width.toFixed(2))} × ${Number(height.toFixed(2))} mm · ${utilization.toFixed(2)}% used`;
   const fontSize=Math.min(padY*.3,frameWidth/(summary.length*.65));
   const creditFontSize=Math.min(padY*.3,frameWidth/(STUDIO_CREDIT.length*.65));
@@ -36,7 +41,8 @@ export function exportSVG(doc: Job,result: Result): ExportBundle {
   add(root,'desc',{id:'layout-description'},`${summary}. Valid nesting layout; geometry is in millimetres.`);
   const decoration=add(root,'g',{'data-sparrow-decoration':'true','aria-hidden':'true'});
   add(decoration,'rect',{x:left-padX,y:top-padY,width:pageWidth,height:pageHeight,fill:'#ffffff'});
-  add(decoration,'rect',{x:0,y:0,width,height,fill:'#f1f5f9',stroke:'#64748b','stroke-width':Math.min(width,height)*.0025});
+  if(sheet)add(decoration,'path',{id:SHEET_LAYER,d:pathData(sheet),transform:`translate(0 ${height}) scale(1 -1)`,'fill-rule':'evenodd',fill:'#f1f5f9',stroke:'#64748b','stroke-width':Math.min(width,height)*.0025});
+  else add(decoration,'rect',{x:0,y:0,width,height,fill:'#f1f5f9',stroke:'#64748b','stroke-width':Math.min(width,height)*.0025});
   add(decoration,'text',{x:left,y:top-padY*.6,'font-family':'monospace','font-size':fontSize,fill:'#334155'},summary);
   const credit=add(decoration,'text',{x:left,y:top-padY*.15,'font-family':'monospace','font-size':creditFontSize,fill:'#334155'});
   add(credit,'a',{href:'https://sparrowstudio.app',target:'_blank'},STUDIO_CREDIT);
@@ -49,12 +55,19 @@ export function exportSVG(doc: Job,result: Result): ExportBundle {
   const svg=new XMLSerializer().serializeToString(svgDocument)+'\n';
 
   const xml=new DOMParser({onError:(_level,message)=>{throw Error(message);}}).parseFromString(svg,'image/svg+xml');
-  const parsedRoot=xml.documentElement!,group=Array.from(parsedRoot.getElementsByTagName('g')).find(g=>g.getAttribute('id')==='parts'),elements=Array.from(parsedRoot.getElementsByTagName('path'));
-  if(parsedRoot.getAttribute('width')!==`${pageWidth}mm`||parsedRoot.getAttribute('height')!==`${pageHeight}mm`||parsedRoot.getAttribute('viewBox')!==viewBox||!group||group.getAttribute('transform')!==`translate(0 ${doc.settings.materialWidthMm}) scale(1 -1)`||elements.length!==world.length)throw Error('Serialized SVG dimensions, axes or copy count changed.');
-  const reparsed=elements.map((element,i)=>{
+  const parsedRoot=xml.documentElement!,group=Array.from(parsedRoot.getElementsByTagName('g')).find(g=>g.getAttribute('id')==='parts'),elements=group?Array.from(group.getElementsByTagName('path')):[];
+  if(parsedRoot.getAttribute('width')!==`${pageWidth}mm`||parsedRoot.getAttribute('height')!==`${pageHeight}mm`||parsedRoot.getAttribute('viewBox')!==viewBox||!group||group.getAttribute('transform')!==`translate(0 ${height}) scale(1 -1)`||elements.length!==world.length)throw Error('Serialized SVG dimensions, axes or copy count changed.');
+  const readRings=(element:Element):Ring[]=>{
     const d=element.getAttribute('d')??'',commands=d.match(/M[^MZ]+Z/g)??[];
     if(commands.join('')!==d||element.getAttribute('fill-rule')!=='evenodd')throw Error('Serialized SVG lost its closed contour structure.');
-    const rings=commands.map(command=>command.slice(1,-1).split('L').map(point=>point.split(',').map(Number)) as Ring);
+    return commands.map(command=>command.slice(1,-1).split('L').map(point=>point.split(',').map(Number)) as Ring);
+  };
+  if(sheet){
+    const outlines=Array.from(parsedRoot.getElementsByTagName('path')).filter(element=>element.getAttribute('id')===SHEET_LAYER);
+    if(outlines.length!==1||outlines[0].getAttribute('transform')!==`translate(0 ${height}) scale(1 -1)`||JSON.stringify(readRings(outlines[0]))!==JSON.stringify(sheet))throw Error('Serialized SVG changed the sheet.');
+  }
+  const reparsed=elements.map((element,i)=>{
+    const rings=readRings(element);
     return {...world[i],outer:rings[0],holes:rings.slice(1)};
   });
   if(JSON.stringify(reparsed)!==JSON.stringify(world))throw Error('Serialized SVG changed layout coordinates.');

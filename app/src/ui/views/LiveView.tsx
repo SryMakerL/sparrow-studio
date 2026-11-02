@@ -3,31 +3,48 @@ import { netArea, worldParts } from '../../engine/geometry/validate';
 import type { Job } from '../../engine/model';
 import type { DisplayUnit } from '../../engine/units';
 import type { Timing } from '../../engine/workers/useSolver';
-import { activeMachine, copyCount, utilization } from '../../project/model';
+import { activeMachine, copyCount, usedUtilization } from '../../project/model';
 import { Canvas } from '../Canvas';
 import { useStudio } from '../context';
 import { formatLength, formatPercent, formatSeconds } from '../format';
 import { RunBar } from '../RunBar';
 import { rulerStep } from '../rulers';
+import { sheetStack } from './sheetStack';
 import { LayoutDrawing } from './LayoutDrawing';
 
 export function LiveView() {
   const { solver, runJob, unit, running, project, setTab } = useStudio();
   const [mode, setMode] = useState<'live' | 'best'>('live');
-  const best = solver.result;
-  const frame = solver.live;
+  const batch = !!runJob?.settings.sheetCount;
+  const currentResult = batch ? solver.currentResult : solver.result;
+  const completed = currentResult?.sheets;
+  const lastSheet = completed?.at(-1);
+  const best = batch ? lastSheet?.result : solver.result;
+  const displayJob = batch ? lastSheet?.job : runJob;
+  const frame = batch ? undefined : solver.live;
   const showLive = mode === 'live' && !!frame;
-  const bestWorld = useMemo(() => (runJob && best ? worldParts(runJob, best) : []), [runJob, best]);
+  const bestWorld = useMemo(
+    () => (displayJob && best ? worldParts(displayJob, best) : []),
+    [displayJob, best],
+  );
   const history = (solver.diagnostics.current?.history ?? []).filter(
     (entry) => entry.validation === 'passed',
   );
   const width = runJob?.settings.materialWidthMm ?? project.stock.strip.widthMm;
-  const shownLength = (showLive ? frame?.result.usedLengthMm : best?.usedLengthMm) ?? width * 2;
+  const shownLength =
+    runJob?.settings.sheetLengthMm ??
+    (showLive ? frame?.result.usedLengthMm : best?.usedLengthMm) ??
+    width * 2;
   // Keep the view still while the layout shrinks: fit to the longest layout of this run.
   const longest = useRef({ job: runJob, length: 0 });
   if (longest.current.job !== runJob) longest.current = { job: runJob, length: 0 };
   longest.current.length = Math.max(longest.current.length, shownLength);
 
+  const sheetWorlds = useMemo(
+    () => completed?.map((sheet) => worldParts(sheet.job, sheet.result)) ?? [],
+    [completed],
+  );
+  const stack = sheetStack(completed ?? [], width, shownLength);
   const limit = runJob?.settings.timeLimitSeconds ?? null;
   const status =
     solver.state === 'Initializing'
@@ -57,9 +74,13 @@ export function LiveView() {
               <div className="metrics">
                 <div className="metric">
                   <span className="metric-value">
-                    {best && runJob ? formatPercent(utilization(runJob, best, netArea)) : '—'}
+                    {best && displayJob
+                      ? formatPercent(usedUtilization(displayJob, best, netArea))
+                      : '—'}
                   </span>
-                  <span className="muted">utilization</span>
+                  <span className="muted">
+                    {batch ? 'last sheet used-area utilization' : 'utilization'}
+                  </span>
                 </div>
                 <div className="metric">
                   <span className="metric-value">
@@ -68,11 +89,19 @@ export function LiveView() {
                   <span className="muted">length used</span>
                 </div>
               </div>
-              <span className="muted">Of the best valid layout so far.</span>
+              <span className="muted">
+                {batch
+                  ? `${completed?.length ?? 0} sheets in the current round · ${currentResult?.unplaced?.reduce((sum, part) => sum + part.quantity, 0) ?? copyCount(runJob?.parts ?? [])} parts remaining. Each sheet is optimized until utilization has not improved for ${runJob?.settings.sheetStagnationSeconds ?? 15} seconds, then the next sheet is processed. After the last sheet, a new partition is tried.`
+                  : 'Of the best valid layout so far.'}
+              </span>
               <div className="stack">
                 <span className="muted">
                   {formatSeconds(solver.elapsed)}
-                  {limit ? ` of up to ${formatSeconds(limit)}` : ' · stops when the search stalls'}
+                  {limit
+                    ? ` of ${formatSeconds(limit)}${batch ? ' total search time' : ''}`
+                    : batch
+                      ? ' · stops after 3 rounds without improvement'
+                      : ' · stops when the search stalls'}
                 </span>
                 {limit && (
                   <div className="progress" aria-hidden="true">
@@ -80,11 +109,11 @@ export function LiveView() {
                   </div>
                 )}
               </div>
-              {history.length > 1 && (
+              {!batch && history.length > 1 && (
                 <ImprovementChart history={history} job={runJob} elapsed={solver.elapsed} />
               )}
               {solver.error && <p className="field-error">{solver.error}</p>}
-              {!running && best && (
+              {!running && solver.result && (
                 <button className="primary" onClick={() => setTab('solution')}>
                   Show the solution
                 </button>
@@ -99,8 +128,18 @@ export function LiveView() {
                 </button>
               )}
               <p className="muted">
-                {solver.phase ? `${solver.phase} · ` : ''}
-                {solver.workers ? `${solver.workers.actual} solver threads` : 'Preparing threads'}
+                {batch
+                  ? currentResult?.roundIndex !== undefined
+                    ? `Round ${currentResult.roundIndex + 1}${currentResult.currentSheetIndex !== undefined ? ` · Sheet ${currentResult.currentSheetIndex + 1}` : ''} · `
+                    : ''
+                  : solver.phase
+                    ? `${solver.phase} · `
+                    : ''}
+                {solver.workers
+                  ? `${solver.workers.actual} solver threads`
+                  : batch
+                    ? 'Local sheet solver'
+                    : 'Preparing threads'}
                 {running ? ' · keep this tab visible for the best speed.' : ''}
               </p>
             </div>
@@ -110,18 +149,27 @@ export function LiveView() {
       </section>
       <Canvas
         label="Live layout"
-        extent={[0, -width * 0.1, longest.current.length * 1.05, width * 1.1]}
+        extent={
+          batch ? stack.extent : [0, -width * 0.1, longest.current.length * 1.05, width * 1.1]
+        }
         toolbar={
           runJob && (
             <>
-              <div className="segmented" role="group" aria-label="Layout shown">
-                <button aria-pressed={showLive} disabled={!frame} onClick={() => setMode('live')}>
-                  Live search
-                </button>
-                <button aria-pressed={!showLive} disabled={!best} onClick={() => setMode('best')}>
-                  Best valid
-                </button>
-              </div>
+              <p className="muted">
+                {batch
+                  ? 'All validated sheets of the current round · the best round is saved separately'
+                  : 'Live search and best valid layout'}
+              </p>
+              {!batch && (
+                <div className="segmented" role="group" aria-label="Layout shown">
+                  <button aria-pressed={showLive} disabled={!frame} onClick={() => setMode('live')}>
+                    Live search
+                  </button>
+                  <button aria-pressed={!showLive} disabled={!best} onClick={() => setMode('best')}>
+                    Best valid
+                  </button>
+                </div>
+              )}
               {showLive && (
                 <span className="chip">
                   <i className="overlap-key" aria-hidden="true" />
@@ -133,9 +181,36 @@ export function LiveView() {
         }
       >
         {({ upp }) =>
-          runJob && (showLive ? frame : best) ? (
+          batch ? (
+            completed?.map((sheet, index) => {
+              const percent = usedUtilization(sheet.job, sheet.result, netArea);
+              return (
+                <g
+                  key={index}
+                  transform={`translate(0 ${stack.positions[index].offset})`}
+                  role="group"
+                  aria-label={`Sheet ${index + 1}`}
+                >
+                  <text
+                    x={0}
+                    y={-sheet.job.settings.materialWidthMm - 16 * upp}
+                    fontSize={13 * upp}
+                    fill="var(--ink)"
+                  >
+                    {`Sheet ${index + 1}${sheet.job.settings.sheetStock ? ` · ${sheet.job.settings.sheetStock.name}` : ''} · ${sheet.result.placements.length} parts · ${formatPercent(percent)} · ${formatLength(sheet.result.usedLengthMm, unit)} ${unit} used`}
+                  </text>
+                  <LayoutDrawing
+                    job={sheet.job}
+                    world={sheetWorlds[index]}
+                    usedLength={sheet.result.usedLengthMm}
+                    upp={upp}
+                  />
+                </g>
+              );
+            })
+          ) : displayJob && (showLive ? frame : best) ? (
             <LayoutDrawing
-              job={runJob}
+              job={displayJob}
               world={showLive ? frame!.world : bestWorld}
               overlaps={showLive ? frame!.overlaps : []}
               usedLength={shownLength}
@@ -161,9 +236,11 @@ function NextRun({ onSolution }: { onSolution?: () => void }) {
         <dd>
           {project.parts.length} types, {copyCount(project.parts)} copies
         </dd>
-        <dt>Strip</dt>
+        <dt>{project.stock.packing === 'sheets' ? 'Sheets' : 'Strip'}</dt>
         <dd>
           {formatLength(project.stock.strip.widthMm, unit)} {unit} wide
+          {project.stock.packing === 'sheets' &&
+            ` × ${formatLength(project.stock.lengthMm, unit)} ${unit} long · ${project.stock.quantity} available`}
         </dd>
         <dt>Gap</dt>
         <dd>
@@ -172,8 +249,10 @@ function NextRun({ onSolution }: { onSolution?: () => void }) {
         <dt>Stops</dt>
         <dd>
           {settings.timeLimitSeconds
-            ? `after ${formatSeconds(settings.timeLimitSeconds)} at most`
-            : 'when the search stalls'}
+            ? `${project.stock.packing === 'sheets' ? 'total search time: ' : 'after '}${formatSeconds(settings.timeLimitSeconds)}`
+            : project.stock.packing === 'sheets'
+              ? 'after 3 rounds without improvement'
+              : 'when the search stalls'}
         </dd>
         <dt>Search</dt>
         <dd>{settings.preset === 'fast' ? 'Fast' : 'Standard'}</dd>

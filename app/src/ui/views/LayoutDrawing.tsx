@@ -32,18 +32,38 @@ export function LayoutDrawing({
   onPick?: (part: WorldPart) => void;
   onHover?: (part: WorldPart | undefined, event?: MouseEvent<SVGPathElement>) => void;
 }) {
+  const stock = job.settings.sheetStock;
   const width = job.settings.materialWidthMm;
   const index = new Map(job.parts.map((part, i) => [part.id, i]));
-  const reach = usedLength + width * 0.25;
+  const fixedLength = job.settings.sheetLengthMm;
+  const reach = fixedLength ?? usedLength + width * 0.25;
   return (
     <>
-      <rect x={0} y={-width} width={usedLength} height={width} fill="var(--sheet)" />
-      <path
-        d={`M${reach} ${-width}H0V0H${reach}`}
-        className="sheet-edge"
-        strokeWidth={2 * upp}
-        fill="none"
-      />
+      {stock?.kind === 'polygon' ? (
+        <path
+          d={ringsPath([stock.outer, ...stock.holes])}
+          fillRule="evenodd"
+          fill="var(--sheet)"
+          className="sheet-edge"
+          strokeWidth={2 * upp}
+        />
+      ) : (
+        <>
+          <rect
+            x={0}
+            y={-width}
+            width={fixedLength ?? usedLength}
+            height={width}
+            fill="var(--sheet)"
+          />
+          <path
+            d={fixedLength ? `M0 ${-width}H${reach}V0H0Z` : `M${reach} ${-width}H0V0H${reach}`}
+            className="sheet-edge"
+            strokeWidth={2 * upp}
+            fill="none"
+          />
+        </>
+      )}
       <path
         d={`M${usedLength} ${-width - 8 * upp}V${8 * upp}`}
         className="accent-line"
