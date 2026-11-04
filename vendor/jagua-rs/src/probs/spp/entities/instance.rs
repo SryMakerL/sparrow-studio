@@ -20,6 +20,8 @@ pub struct SPStockConstraints {
 pub struct SPInstance {
     /// The items to be packed and their demands
     pub items: Vec<(Item, usize)>,
+    /// Construction priorities indexed by item ID.
+    pub item_priorities: Vec<i32>,
     /// The strip in which to pack the items
     pub base_strip: Strip,
     pub stock_constraints: Option<Arc<SPStockConstraints>>,
@@ -39,6 +41,7 @@ impl SPInstance {
         );
 
         Self {
+            item_priorities: vec![0; items.len()],
             items,
             base_strip,
             stock_constraints: None,

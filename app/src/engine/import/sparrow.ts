@@ -39,7 +39,7 @@ export function importSparrow(text: string,fileName: string,scale: number): Impo
     } else throw Error(`Item ${id}: ${String(shape.type)} is unsupported. Disjoint JSON items cannot be split without changing demand.`);
     const orientations=item.allowed_orientations;
     if(orientations!==undefined && orientations!==null && (!Array.isArray(orientations) || !orientations.length || !orientations.every(a=>typeof a==='number' && Number.isFinite(a)))) throw Error(`Item ${id}: allowed_orientations must be omitted for free rotation or a nonempty degree list.`);
-    return localize({...newPart(outer,`Part ${id}`),holes,quantity:number(item.demand),
+    return localize({...newPart(outer,`Part ${id}`),holes,quantity:number(item.demand),priority:item.priority===undefined?0:number(item.priority),
       source:{format:'sparrow',fileName,entityId:String(id)},
       rotations: orientations==null?{kind:'continuous'}:{kind:'discrete',degrees:orientations as number[]}});
   });
@@ -67,7 +67,7 @@ export function solverInput(doc: Job, initialPlacement?: Result): string {
       outer:doc.settings.sheetStock.outer,holes:doc.settings.sheetStock.holes,
     }:undefined,
     items:doc.parts.filter(part=>part.quantity>0).map((p,id)=>({
-    id,demand:p.quantity,allowed_orientations:p.rotations.kind==='continuous'?undefined:p.rotations.degrees,
+    id,demand:p.quantity,priority:p.priority ?? 0,allowed_orientations:p.rotations.kind==='continuous'?undefined:p.rotations.degrees,
     shape:{type:'simple_polygon',data:p.outer},
   }))});
 }

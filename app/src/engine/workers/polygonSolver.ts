@@ -56,6 +56,7 @@ export async function solvePolygon(
           [order[i], order[j]] = [order[j], order[i]];
         }
     }
+    order.sort((a, b) => b.part.priority - a.part.priority);
     const placements: Placement[] =
       round === 0 && initialPlacement ? structuredClone(initialPlacement.placements) : [];
     const rings: Ring[] = placements.map((placement) =>

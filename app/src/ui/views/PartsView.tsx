@@ -45,7 +45,11 @@ export function PartsView() {
   const arrangement = useMemo(() => arrangeParts(parts), [parts]);
   const chosen = parts.find((part) => part.id === selected);
 
-  const updatePart = (id: string, change: { name?: string; quantity?: number }, key?: string) =>
+  const updatePart = (
+    id: string,
+    change: { name?: string; quantity?: number; priority?: number },
+    key?: string,
+  ) =>
     edit(
       (current) => ({
         ...current,
@@ -263,7 +267,7 @@ function PartRow({
         <span>{part.name}</span>
         <span className="muted mono">
           {formatLength(b[2] - b[0], unit)} × {formatLength(b[3] - b[1], unit)} {unit} ·{' '}
-          {ROTATION_LABELS[rotationKind(part.rotations)]}
+          {ROTATION_LABELS[rotationKind(part.rotations)]} · Priority {part.priority}
         </span>
       </span>
       {differs && <i className="differs-dot" title="Differs from the part defaults" />}
@@ -324,6 +328,23 @@ function PartProperties({
           </button>
         </div>
       </div>
+      <label className="field">
+        Priority
+        <input
+          className="mono"
+          type="number"
+          min={0}
+          max={2147483647}
+          step={1}
+          value={part.priority}
+          onChange={(event) => {
+            const priority = event.target.valueAsNumber;
+            if (Number.isInteger(priority) && priority >= 0 && priority <= 2147483647)
+              onChange({ priority }, `priority:${part.id}`);
+          }}
+        />
+        <span className="muted">Higher numbers are nested first. Default: 0.</span>
+      </label>
       <RotationField
         rule={part.rotations}
         defaultRule={defaultRule}

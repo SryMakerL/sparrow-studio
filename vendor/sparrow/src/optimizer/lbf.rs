@@ -68,7 +68,10 @@ impl LBFBuilder {
                 let item_shape = self.instance.item(*id).shape_cd.as_ref();
                 let convex_hull_area = item_shape.surrogate().convex_hull_area;
                 let diameter = item_shape.diameter;
-                Reverse(OrderedFloat(convex_hull_area * diameter))
+                (
+                    Reverse(self.instance.item_priorities[*id]),
+                    Reverse(OrderedFloat(convex_hull_area * diameter)),
+                )
             })
             .flat_map(|id| {
                 let missing_qty = self.prob.item_demand_qtys[id];
@@ -145,6 +148,63 @@ impl LBFBuilder {
         match best_sample {
             Some((d_transf, SampleEval::Clear { .. })) => Some(SPPlacement { item_id, d_transf }),
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::DEFAULT_SPARROW_CONFIG;
+    use crate::consts::LBF_SAMPLE_CONFIG;
+    use jagua_rs::io::import::Importer;
+    use jagua_rs::probs::spp::io::{ext_repr::ExtSPInstance, import_instance};
+    use rand::SeedableRng;
+    use serde_json::json;
+
+    #[test]
+    fn item_priority_defaults_to_zero_on_import_and_new_instances() {
+        let input: ExtSPInstance = serde_json::from_value(json!({
+            "name":"default priority", "strip_height":100,
+            "items":[{"id":0,"demand":1,"allowed_orientations":[0],
+                "shape":{"type":"rectangle","data":{"x_min":0,"y_min":0,"width":8,"height":8}}}]
+        })).unwrap();
+        assert_eq!(input.items[0].priority, 0);
+        let importer = Importer::new(DEFAULT_SPARROW_CONFIG.cde_config, None, None, None);
+        let instance = import_instance(&importer, &input).unwrap();
+        assert_eq!(instance.item_priorities, vec![0]);
+        let fresh = SPInstance::new(instance.items.clone(), instance.base_strip);
+        assert_eq!(fresh.item_priorities, vec![0]);
+    }
+
+    #[test]
+    fn item_priority_controls_construction_before_geometry_without_changing_ids() {
+        let mut input: ExtSPInstance = serde_json::from_value(json!({
+            "name":"priority order", "strip_height":100,
+            "items":[
+                {"id":1,"demand":2,"allowed_orientations":[0],
+                    "shape":{"type":"rectangle","data":{"x_min":0,"y_min":0,"width":8,"height":8}}},
+                {"id":0,"demand":1,"allowed_orientations":[0],
+                    "shape":{"type":"rectangle","data":{"x_min":0,"y_min":0,"width":20,"height":20}}},
+                {"id":2,"demand":1,"allowed_orientations":[0],
+                    "shape":{"type":"rectangle","data":{"x_min":0,"y_min":0,"width":12,"height":12}}},
+                {"id":99,"demand":0,"priority":42,"allowed_orientations":[0],
+                    "shape":{"type":"rectangle","data":{"x_min":0,"y_min":0,"width":8,"height":8}}}
+            ]
+        })).unwrap();
+        let importer = Importer::new(DEFAULT_SPARROW_CONFIG.cde_config, None, None, None);
+        for (priority, expected_order) in [(0, vec![0, 2, 1, 1]), (i32::MAX, vec![2, 1, 1, 0])] {
+            input.items[0].priority = priority;
+            input.items[2].priority = priority;
+            let instance = import_instance(&importer, &input).unwrap();
+            assert_eq!(instance.item_priorities, vec![0, priority, priority]);
+            assert_eq!(instance.items.iter().map(|(item, _)| item.id).collect::<Vec<_>>(), vec![0, 1, 2]);
+            let builder = LBFBuilder::new(instance, Xoshiro256PlusPlus::seed_from_u64(42), LBF_SAMPLE_CONFIG)
+                .construct().unwrap();
+            let placed_ids = builder.prob.layout.placed_items.values()
+                .map(|item| item.item_id).collect::<Vec<_>>();
+            assert_eq!(placed_ids, expected_order);
+            assert!(builder.prob.layout.is_feasible());
         }
     }
 }

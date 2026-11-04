@@ -151,11 +151,12 @@ export function jobKey(job: Job): string {
   return JSON.stringify({
     parts: job.parts
       .filter((part) => part.quantity > 0)
-      .map(({ id, outer, holes, quantity, rotations }) => [
+      .map(({ id, outer, holes, quantity, priority, rotations }) => [
         id,
         outer,
         holes,
         quantity,
+        priority ?? 0,
         ruleKey(rotations),
       ]),
     width: job.settings.materialWidthMm,

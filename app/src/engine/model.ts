@@ -9,6 +9,7 @@ export type Part = {
   holes: Ring[];
   approximationToleranceMm: number;
   quantity: number;
+  priority: number;
   rotations: RotationRule;
 };
 export type SheetStock = {
@@ -102,6 +103,7 @@ export function newPart(outer: Ring, name = 'Part'): Part {
     holes: [],
     approximationToleranceMm: 0,
     quantity: 1,
+    priority: 0,
     rotations: { kind: 'discrete', degrees: [0, 180] },
   };
 }

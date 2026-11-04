@@ -115,6 +115,9 @@ export function normalizePart(part: Part): Part {
     !['svg', 'dxf', 'sparrow'].includes(part.source.format)
   )
     throw Error('Invalid part identity or provenance.');
+  const priority = part.priority === undefined ? 0 : part.priority;
+  if (!Number.isInteger(priority) || priority < 0 || priority > 2147483647)
+    throw Error('Part priority must be a whole number from 0 to 2147483647.');
   if (!Number.isInteger(part.quantity) || part.quantity < 0 || part.quantity > LIMITS.copies)
     throw Error('Quantity must be a whole number from 0 to 500.');
   if (
@@ -148,7 +151,7 @@ export function normalizePart(part: Part): Part {
       )
         throw Error('Holes overlap or contain each other.');
   }
-  return { ...part, outer, holes: holes.map((h) => [...h].reverse()) };
+  return { ...part, priority, outer, holes: holes.map((h) => [...h].reverse()) };
 }
 export function scalePart(part: Part, factor: number): Part {
   if (!Number.isFinite(factor) || factor <= 0) throw Error('Scale must be finite and positive.');

@@ -107,8 +107,15 @@ export async function solveSheets(
         errors: [],
       },
     };
+    const priorities = new Map(job.parts.map((p) => [p.id, p.priority]));
+    const priorityLevels = [...new Set(priorities.values())].sort((a, b) => b - a);
     const score = (result: Result) => [
-      result.unplaced!.reduce((sum, p) => sum + p.quantity, 0),
+      ...priorityLevels.map((priority) =>
+        result.unplaced!.reduce(
+          (sum, p) => sum + (priorities.get(p.partId) === priority ? p.quantity : 0),
+          0,
+        ),
+      ),
       ...[...jobStocks(job)]
         .sort((a, b) => b.priority - a.priority)
         .map(
@@ -432,6 +439,8 @@ async function solveSheetRound(
     const pending = new Set(options.pendingIds);
     ordered.sort((a, b) => Number(pending.has(b.id)) - Number(pending.has(a.id)));
   }
+  ordered.sort((a, b) => b.priority - a.priority);
+  const priorityLevels = [...new Set(job.parts.map((p) => p.priority))].sort((a, b) => b - a);
   const failedStocks = new Map<string, number>();
   let continuousComplete = false;
   for (let sheetIndex = 0; sheetIndex < count && !stopped(); sheetIndex++) {
@@ -489,10 +498,17 @@ async function solveSheetRound(
         progress();
       }
       const ids = entry.job.parts.flatMap((p) => Array<string>(p.quantity).fill(p.id));
+      const priorityCounts = (parts: Job['parts']) =>
+        priorityLevels.map((priority) =>
+          parts.reduce((sum, p) => sum + (p.priority === priority ? p.quantity : 0), 0),
+        );
+      const counts = priorityCounts(entry.job.parts);
+      const bestCounts = best ? priorityCounts(best.job.parts) : counts.map(() => 0);
+      const different = counts.findIndex((value, i) => value !== bestCounts[i]);
       if (
         !best ||
-        ids.length > selected.length ||
-        (ids.length === selected.length && entry.result.usedLengthMm < best.result.usedLengthMm)
+        (different >= 0 && counts[different] > bestCounts[different]) ||
+        (different < 0 && entry.result.usedLengthMm < best.result.usedLengthMm)
       ) {
         best = entry;
         selected = ids;

@@ -21,6 +21,9 @@ pub struct ExtItem {
     pub base: crate::io::ext_repr::ExtItem,
     /// Amount of times this item has to be produced
     pub demand: u64,
+    /// Construction priority; higher values are placed first.
+    #[serde(default)]
+    pub priority: i32,
 }
 
 /// Strip Packing Problem solution

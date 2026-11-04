@@ -59,7 +59,14 @@ pub fn import_instance(importer: &Importer, ext_instance: &ExtSPInstance) -> Res
         width,
     )?;
 
-    Ok(SPInstance::new(items, base_strip))
+    let mut instance = SPInstance::new(items, base_strip);
+    for ext_item in &ext_instance.items {
+        if ext_item.demand > 0 {
+            let item_id = usize::try_from(ext_item.base.id).unwrap();
+            instance.item_priorities[item_id] = ext_item.priority;
+        }
+    }
+    Ok(instance)
 }
 
 /// Imports a solution into the library.
