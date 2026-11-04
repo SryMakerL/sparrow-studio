@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { normalizeJob } from '../src/engine/geometry/normalize';
 import { newPart, type Part } from '../src/engine/model';
 import { parseProject, projectFileName, serializeProject } from '../src/project/file';
 import { arrangeParts } from '../src/project/layout';
@@ -48,6 +49,73 @@ describe('project document', () => {
   it('round-trips through a project file', () => {
     const project = addParts(newProject('Shop job'), [square(10, 3)]);
     expect(parseProject(JSON.parse(serializeProject(project)))).toEqual(project);
+  });
+
+  it('defaults missing sheet controls independently and ignores the legacy timeout', () => {
+    const project = addParts(newProject('Job'), [square(10)]);
+    const { sheetCompressionSeconds: _, sheetInsertionFailures: __, ...legacy } = project.settings;
+    for (const sheetStagnationSeconds of [undefined, 15, 45, -1]) {
+      const parsed = parseProject({
+        ...project,
+        settings: { ...legacy, sheetStagnationSeconds },
+      });
+      expect(parsed.settings.sheetCompressionSeconds).toBe(10);
+      expect(parsed.settings.sheetInsertionFailures).toBe(3);
+    }
+    expect(
+      parseProject({ ...project, settings: { ...legacy, sheetCompressionSeconds: 20 } }).settings
+        .sheetInsertionFailures,
+    ).toBe(3);
+    expect(
+      parseProject({ ...project, settings: { ...legacy, sheetInsertionFailures: 8 } }).settings
+        .sheetCompressionSeconds,
+    ).toBe(10);
+    const job = projectJob(project);
+    const {
+      sheetCompressionSeconds: _seconds,
+      sheetInsertionFailures: _failures,
+      ...settings
+    } = job.settings;
+    const normalized = normalizeJob({
+      ...job,
+      settings: { ...settings, sheetStagnationSeconds: 15 },
+    } as typeof job);
+    expect(normalized.settings.sheetCompressionSeconds).toBe(10);
+    expect(normalized.settings.sheetInsertionFailures).toBe(3);
+  });
+
+  it.each([
+    ['sheetCompressionSeconds', 1, 600],
+    ['sheetInsertionFailures', 1, 100],
+  ] as const)('validates %s in files, solver jobs and start blockers', (field, min, max) => {
+    const project = addParts(newProject('Job'), [square(10)]);
+    for (const value of [min, max]) {
+      const changed = { ...project, settings: { ...project.settings, [field]: value } };
+      const parsed = parseProject(JSON.parse(serializeProject(changed)));
+      expect(parsed.settings[field]).toBe(value);
+      expect(projectJob(parsed).settings[field]).toBe(value);
+      expect(normalizeJob(projectJob(parsed)).settings[field]).toBe(value);
+      expect(startBlockers(changed)).toEqual([]);
+    }
+    for (const value of [0, max + 1, 1.5, NaN, Infinity, null, '3']) {
+      const changed = { ...project, settings: { ...project.settings, [field]: value } };
+      expect(() => parseProject(changed)).toThrow(/invalid sheet/);
+      const typed = changed as typeof project;
+      expect(() => normalizeJob(projectJob(typed))).toThrow(/Sheet/);
+      expect(startBlockers(typed)).toHaveLength(1);
+    }
+  });
+
+  it('round-trips non-default sheet controls and passes both to the solver', () => {
+    const project = addParts(newProject('Job'), [square(10)]);
+    project.settings.sheetCompressionSeconds = 24;
+    project.settings.sheetInsertionFailures = 7;
+    const parsed = parseProject(JSON.parse(serializeProject(project)));
+    expect(parsed).toEqual(project);
+    expect(projectJob(parsed).settings).toMatchObject({
+      sheetCompressionSeconds: 24,
+      sheetInsertionFailures: 7,
+    });
   });
 
   it('rejects other formats and versions', () => {

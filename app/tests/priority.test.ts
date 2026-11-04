@@ -51,7 +51,7 @@ const sheetJob = (parts: Job['parts']): Job => ({
     materialWidthMm: 10,
     sheetLengthMm: 10,
     sheetCount: 1,
-    sheetStagnationSeconds: 1,
+    sheetCompressionSeconds: 1,
     timeLimitSeconds: 10,
   },
 });

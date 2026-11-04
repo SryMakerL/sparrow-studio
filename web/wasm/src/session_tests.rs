@@ -258,6 +258,130 @@ fn automatic_has_no_deadline_and_legacy_compress_keeps_whole_step_deadline() {
 }
 
 #[test]
+fn fixed_phase_deadline_cannot_be_reset_and_observes_parent_interrupt() {
+    use std::cell::Cell;
+    struct Signal(Cell<bool>);
+    impl Terminator for Signal {
+        fn kill(&self) -> bool {
+            self.0.get()
+        }
+        fn new_timeout(&mut self, _: Duration) {}
+        fn timeout_at(&self) -> Option<Instant> {
+            None
+        }
+    }
+    let parent = Signal(Cell::new(false));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut term = PhaseTerminator {
+        parent: &parent,
+        deadline,
+    };
+    term.new_timeout(Duration::from_secs(600));
+    assert_eq!(term.timeout_at(), Some(deadline));
+    assert!(!term.kill());
+    parent.0.set(true);
+    assert!(term.kill());
+    parent.0.set(false);
+    term.deadline = Instant::now() - Duration::from_millis(1);
+    assert!(term.kill());
+}
+
+#[test]
+fn finite_compress_restarts_exhausted_phases_until_the_original_deadline() {
+    use sparrow::config::ShrinkDecayStrategy;
+    let mut session = session();
+    session.config.expl_cfg.max_conseq_failed_attempts = Some(1);
+    session.config.expl_cfg.separator_config.iter_no_imprv_limit = 1;
+    session.config.expl_cfg.separator_config.strike_limit = 1;
+    session.config.cmpr_cfg.separator_config.iter_no_imprv_limit = 1;
+    session.config.cmpr_cfg.separator_config.strike_limit = 1;
+    session.config.cmpr_cfg.shrink_decay = ShrinkDecayStrategy::FailureBased(0.1);
+    session.config.cmpr_cfg.shrink_range = (0.1, 0.09);
+    let first = candidate(&step(&mut session, &request(&[2, 1], None, None, "search")).unwrap());
+    let input = json!({"quantities":[2,1], "initial_snapshot":first,
+        "mode":"compress", "budget_ms":1000});
+    let request = session.parse_request(&input.to_string()).unwrap();
+    let mut term = SessionTerminator::new(&request, None);
+    let deadline = term.global_deadline.unwrap();
+    let mut messages = vec![];
+    session
+        .execute(request, 43, &mut term, |message| messages.push(message))
+        .unwrap();
+    assert!(Instant::now() >= deadline);
+    assert_eq!(term.global_deadline, Some(deadline));
+    assert_eq!(term.timeout_at(), Some(deadline));
+    assert!(
+        messages
+            .iter()
+            .filter(|m| m["report"] == "ExplFeas")
+            .count()
+            > 2
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m["type"] == "phase" && m["phase"] == "Compression")
+            .count(),
+        1
+    );
+    assert_eq!(messages.last().unwrap()["type"], "finished");
+    let mut width = session.snapshots[&first].strip_width();
+    for message in messages.iter().filter(|m| m["type"] == "candidate") {
+        let solution = &session.snapshots[&(message["snapshotId"].as_u64().unwrap() as u32)];
+        assert!(solution.strip_width() <= width);
+        width = solution.strip_width();
+        assert!(Layout::from_snapshot(&solution.layout_snapshot).is_feasible());
+    }
+}
+
+#[test]
+fn geometric_bound_ignores_zero_demand_and_finishes_without_spinning() {
+    let mut session = session();
+    let input = session
+        .parse_request(&request(&[0, 1], None, None, "compress"))
+        .unwrap();
+    let (instance, initial) = session.prepare(&input, 42).unwrap();
+    let mut problem = SPProblem::new(instance);
+    problem.restore(&initial);
+    assert!(geometric_lower_bound(&problem) < 20.0);
+    let bound = geometric_lower_bound(&problem);
+    problem.change_strip_width(bound);
+    let at_bound = problem.save();
+    let started = Instant::now();
+    struct FinalCounter(usize);
+    impl SolutionListener for FinalCounter {
+        fn report_phase(&mut self, _: OptimizationPhase) {}
+        fn report(&mut self, report: ReportType, _: &SPSolution, _: &SPInstance) {
+            if matches!(report, ReportType::Final) {
+                self.0 += 1;
+            }
+        }
+    }
+    let mut listener = FinalCounter(0);
+    // Exercise the lower-bound exit directly, independently of LBF's placement slack.
+    let deadline = started + Duration::from_secs(10);
+    let input = session
+        .parse_request(
+            &request(&[0, 1], None, None, "compress")
+                .replace("\"budget_ms\":0", "\"budget_ms\":10000"),
+        )
+        .unwrap();
+    let term = SessionTerminator::new(&input, None);
+    compress_until(
+        &problem.instance,
+        at_bound,
+        42,
+        &session.config,
+        deadline,
+        deadline,
+        &term,
+        &mut listener,
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(listener.0, 1);
+}
+
+#[test]
 fn continuous_restores_snapshot_and_runs_each_optimizer_phase_once() {
     struct PhaseCounter {
         inner: SessionTerminator,

@@ -172,7 +172,6 @@ export class SheetWorkerSession {
     offer?: (result: Result) => void,
     budgetMs = 2500,
     initial?: Result,
-    continuous = false,
   ): Promise<Result | undefined> {
     if (signal?.aborted) return;
     await this.idle;
@@ -222,11 +221,6 @@ export class SheetWorkerSession {
         else resolve(error ? undefined : best);
       };
       const abort = () => {
-        if (continuous) {
-          this.dispose();
-          finish();
-          return;
-        }
         this.worker?.postMessage({ type: 'session-cancel', attemptId: id });
         // Search steps return immediately after construction. Compression uses a soft interrupt;
         // the watchdog remains armed until Rust has returned to its event loop.
@@ -249,10 +243,9 @@ export class SheetWorkerSession {
         quantities: this.catalog.parts.map((part) => quantities.get(part.id) ?? 0),
         initialSnapshot,
         retainSnapshot: this.retained,
-        mode: continuous
-          ? 'continuous'
-          : initial &&
-              initial.placements.length === job.parts.reduce((sum, part) => sum + part.quantity, 0)
+        mode:
+          initial &&
+          initial.placements.length === job.parts.reduce((sum, part) => sum + part.quantity, 0)
             ? 'compress'
             : 'search',
         budgetMs: Number.isFinite(remaining) ? Math.max(1, remaining - 100) : null,

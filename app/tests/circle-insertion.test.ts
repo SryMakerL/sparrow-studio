@@ -274,7 +274,7 @@ it('coordinates sixty actual DXF parts through solveSheets and validates wasm ca
       sheetStock: stock,
       sheetStocks: [stock],
       sheetCount: 1,
-      sheetStagnationSeconds: 60,
+      sheetCompressionSeconds: 10,
       solverPreset: 'fast',
       timeLimitSeconds: 60,
     },

@@ -37,7 +37,8 @@ export type JobSettings = {
   sheetStock?: SheetStock;
   sheetLengthMm?: number;
   sheetCount?: number;
-  sheetStagnationSeconds?: number;
+  sheetCompressionSeconds?: number;
+  sheetInsertionFailures?: number;
   solverPreset: Preset;
   materialWidthMm: number;
   clearanceMm: number;

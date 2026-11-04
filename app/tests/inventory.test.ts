@@ -171,7 +171,7 @@ describe('mixed inventory', () => {
         Object.assign(job.settings, {
           sheetStocks: stocks,
           sheetCount: 2,
-          sheetStagnationSeconds: 1,
+          sheetCompressionSeconds: 1,
           timeLimitSeconds: 10,
         });
         let round = 0;
@@ -226,7 +226,7 @@ describe('mixed inventory', () => {
       Object.assign(job.settings, {
         sheetStocks: [stock],
         sheetCount: 3,
-        sheetStagnationSeconds: 1,
+        sheetCompressionSeconds: 1,
         timeLimitSeconds: 10,
       });
       let round = 0,
@@ -304,7 +304,7 @@ describe('mixed inventory', () => {
     try {
       const job = projectJob(p);
       job.settings.timeLimitSeconds = 10;
-      job.settings.sheetStagnationSeconds = 1;
+      job.settings.sheetCompressionSeconds = 1;
       const pending = solveSheets(job, async (candidate) => {
         normalizeJob(candidate);
         const r = layout(candidate);
@@ -364,7 +364,7 @@ describe('mixed inventory', () => {
       Object.assign(job.settings, {
         sheetStocks: [stock],
         sheetCount: 1,
-        sheetStagnationSeconds: 1,
+        sheetCompressionSeconds: 1,
         timeLimitSeconds: null,
       });
       const pending = solveSheets(job, async (child) =>
@@ -418,7 +418,7 @@ describe('mixed inventory', () => {
       Object.assign(input.settings, {
         sheetStocks: stocks,
         sheetCount: 3,
-        sheetStagnationSeconds: 1,
+        sheetCompressionSeconds: 1,
         timeLimitSeconds: 10,
       });
       const solve: StripAttempt = async (child) => {

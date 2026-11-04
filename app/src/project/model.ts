@@ -58,7 +58,8 @@ export type Threads = 0 | 1 | 2 | 3;
 export type SolverSettings = {
   solveWith: SolveWith;
   timeLimitSeconds: TimeLimit;
-  sheetStagnationSeconds: number;
+  sheetCompressionSeconds: number;
+  sheetInsertionFailures: number;
   preset: Preset;
   threads: Threads;
 };
@@ -93,7 +94,8 @@ export const TIME_LIMITS: TimeLimit[] = [null, 10, 30, 60, 120, 300, 600];
 export const DEFAULT_SOLVER_SETTINGS: SolverSettings = {
   solveWith: 'local',
   timeLimitSeconds: null,
-  sheetStagnationSeconds: 15,
+  sheetCompressionSeconds: 10,
+  sheetInsertionFailures: 3,
   preset: 'standard',
   threads: 0,
 };
@@ -134,7 +136,8 @@ export function projectJob(project: ProjectDocument): Job {
       materialWidthMm: project.stock.strip.widthMm,
       clearanceMm: activeMachine(project).gapMm,
       timeLimitSeconds: project.settings.timeLimitSeconds,
-      sheetStagnationSeconds: project.settings.sheetStagnationSeconds,
+      sheetCompressionSeconds: project.settings.sheetCompressionSeconds,
+      sheetInsertionFailures: project.settings.sheetInsertionFailures,
       ...(project.stock.packing === 'sheets'
         ? {
             sheetLengthMm: project.stock.lengthMm,
@@ -187,11 +190,17 @@ export function startBlockers(project: ProjectDocument): string[] {
   else if (project.stock.packing === 'strip' && Number.isFinite(width) && gap >= width)
     reasons.push('The gap must be smaller than the strip width.');
   if (
-    !Number.isInteger(project.settings.sheetStagnationSeconds) ||
-    project.settings.sheetStagnationSeconds < 1 ||
-    project.settings.sheetStagnationSeconds > 600
+    !Number.isInteger(project.settings.sheetCompressionSeconds) ||
+    project.settings.sheetCompressionSeconds < 1 ||
+    project.settings.sheetCompressionSeconds > 600
   )
-    reasons.push('Set a sheet no-improvement timeout from 1 to 600 seconds in Settings.');
+    reasons.push('Set a sheet compression duration from 1 to 600 seconds in Settings.');
+  if (
+    !Number.isInteger(project.settings.sheetInsertionFailures) ||
+    project.settings.sheetInsertionFailures < 1 ||
+    project.settings.sheetInsertionFailures > 100
+  )
+    reasons.push('Set consecutive sheet insertion failures from 1 to 100 in Settings.');
   if (project.stock.packing === 'sheets') {
     if (project.stock.sheets !== undefined)
       try {

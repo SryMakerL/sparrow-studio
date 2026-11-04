@@ -65,14 +65,22 @@ export function parseProject(value: unknown): ProjectDocument {
     ![0, 1, 2, 3].includes(settings.threads as number)
   )
     return fail('invalid solver settings.');
-  const sheetStagnationSeconds =
-    settings.sheetStagnationSeconds === undefined ? 15 : settings.sheetStagnationSeconds;
+  const sheetCompressionSeconds =
+    settings.sheetCompressionSeconds === undefined ? 10 : settings.sheetCompressionSeconds;
   if (
-    !Number.isInteger(sheetStagnationSeconds) ||
-    (sheetStagnationSeconds as number) < 1 ||
-    (sheetStagnationSeconds as number) > 600
+    !Number.isInteger(sheetCompressionSeconds) ||
+    (sheetCompressionSeconds as number) < 1 ||
+    (sheetCompressionSeconds as number) > 600
   )
-    return fail('invalid sheet no-improvement timeout.');
+    return fail('invalid sheet compression duration.');
+  const sheetInsertionFailures =
+    settings.sheetInsertionFailures === undefined ? 3 : settings.sheetInsertionFailures;
+  if (
+    !Number.isInteger(sheetInsertionFailures) ||
+    (sheetInsertionFailures as number) < 1 ||
+    (sheetInsertionFailures as number) > 100
+  )
+    return fail('invalid sheet insertion failures.');
   if (!Array.isArray(value.solutions)) return fail('solutions must be a list.');
   const defaults = value.partDefaults;
   const rule = isRecord(defaults) ? defaults.rotations : undefined;
@@ -114,7 +122,11 @@ export function parseProject(value: unknown): ProjectDocument {
             sheets: normalizeSheetStocks(project.stock.sheets as SheetStock[], true),
           }
         : project.stock,
-    settings: { ...project.settings, sheetStagnationSeconds: sheetStagnationSeconds as number },
+    settings: {
+      ...project.settings,
+      sheetCompressionSeconds: sheetCompressionSeconds as number,
+      sheetInsertionFailures: sheetInsertionFailures as number,
+    },
     parts,
   };
 }

@@ -87,10 +87,6 @@ export function sheetStripSolver(revision: number, threads?: number): StripAttem
     session?.close();
     session = undefined;
   };
-  attempt.continueSheet = (job, signal, offer, budget, initial) =>
-    session
-      ? session.attempt(job, signal, offer, budget, initial, true)
-      : Promise.resolve(undefined);
   attempt.acceptCandidate = (result) => session?.accept(result);
   return attempt;
 }

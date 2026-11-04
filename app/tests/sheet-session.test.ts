@@ -117,7 +117,7 @@ it('hard-stops a stuck session and reinitializes without stale snapshot IDs', as
 });
 
 it.each([30_000, Infinity])(
-  'sends one continuous step with remaining budget and hard-cancels Stop (%s)',
+  'sends one search step with remaining budget and cooperatively cancels Stop (%s)',
   async (budget) => {
     const posted: Record<string, unknown>[] = [];
     class MockWorker {
@@ -128,29 +128,30 @@ it.each([30_000, Infinity])(
           queueMicrotask(() =>
             this.onmessage?.({ data: { type: 'session-ready', runId: 1, documentRevision: 1 } }),
           );
+        if (message.type === 'session-cancel')
+          queueMicrotask(() =>
+            this.onmessage?.({
+              data: { type: 'finished', runId: 1, documentRevision: 1, attemptId: message.attemptId },
+            }),
+          );
       }
     }
     vi.stubGlobal('Worker', MockWorker);
     const session = new SheetWorkerSession(catalog(), 1);
     const controller = new AbortController();
-    const pending = session.attempt(
-      catalog(),
-      controller.signal,
-      undefined,
-      budget,
-      undefined,
-      true,
-    );
+    const pending = session.attempt(catalog(), controller.signal, undefined, budget);
     await vi.waitFor(() =>
       expect(posted.some((message) => message.type === 'session-step')).toBe(true),
     );
     const request = posted.find((message) => message.type === 'session-step')!;
-    expect(request.mode).toBe('continuous');
+    expect(request.mode).toBe('search');
     if (budget === Infinity) expect(request.budgetMs).toBeNull();
     else expect(request.budgetMs).toBeGreaterThan(29_000);
     controller.abort();
     await expect(pending).resolves.toBeUndefined();
-    expect(posted.at(-1)?.type).toBe('stop');
+    expect(posted.at(-1)).toMatchObject({ type: 'session-cancel', attemptId: request.attemptId });
+    expect(posted.some((message) => message.type === 'stop')).toBe(false);
+    session.close();
   },
 );
 

@@ -80,10 +80,26 @@ export function SettingsView() {
                         </select>
                       </label>
                       {project.stock.packing === 'sheets' && (
-                        <SheetTimeoutInput
-                          seconds={settings.sheetStagnationSeconds}
-                          onChange={(sheetStagnationSeconds) => update({ sheetStagnationSeconds })}
-                        />
+                        <>
+                          <SheetSettingInput
+                            label="Sheet compression duration, seconds"
+                            value={settings.sheetCompressionSeconds}
+                            max={600}
+                            defaultValue={10}
+                            onChange={(sheetCompressionSeconds) =>
+                              update({ sheetCompressionSeconds })
+                            }
+                          />
+                          <SheetSettingInput
+                            label="Consecutive insertion failures before changing sheets"
+                            value={settings.sheetInsertionFailures}
+                            max={100}
+                            defaultValue={3}
+                            onChange={(sheetInsertionFailures) =>
+                              update({ sheetInsertionFailures })
+                            }
+                          />
+                        </>
                       )}
                     </>
                   )}
@@ -134,24 +150,30 @@ export function SettingsView() {
   );
 }
 
-function SheetTimeoutInput({
-  seconds,
+function SheetSettingInput({
+  label,
+  value,
+  max,
+  defaultValue,
   onChange,
 }: {
-  seconds: number;
-  onChange: (seconds: number) => void;
+  label: string;
+  value: number;
+  max: number;
+  defaultValue: number;
+  onChange: (value: number) => void;
 }) {
-  const [text, setText] = useState(String(seconds));
-  useEffect(() => setText(String(seconds)), [seconds]);
-  const value = Number(text);
-  const valid = text.trim() !== '' && Number.isInteger(value) && value >= 1 && value <= 600;
+  const [text, setText] = useState(String(value));
+  useEffect(() => setText(String(value)), [value]);
+  const number = Number(text);
+  const valid = text.trim() !== '' && Number.isInteger(number) && number >= 1 && number <= max;
   return (
     <label className="field">
-      Sheet no-improvement timeout, seconds
+      {label}
       <input
         type="number"
         min={1}
-        max={600}
+        max={max}
         step={1}
         value={text}
         aria-invalid={!valid}
@@ -159,11 +181,11 @@ function SheetTimeoutInput({
           const next = event.target.value;
           setText(next);
           const number = Number(next);
-          if (next.trim() !== '' && Number.isInteger(number) && number >= 1 && number <= 600)
+          if (next.trim() !== '' && Number.isInteger(number) && number >= 1 && number <= max)
             onChange(number);
         }}
       />
-      <span className="muted">Default: 15 seconds. The total time limit takes priority.</span>
+      <span className="muted">Default: {defaultValue}. The total time limit takes priority.</span>
     </label>
   );
 }
@@ -185,15 +207,16 @@ function SettingsExplanation({ item }: { item: Item }) {
           far is kept.
         </p>
         <p className="muted">
-          In rectangular sheet mode, the selected time is the total search budget for all sheets.
-          Earlier sheets are filled and compressed first. A sheet advances only after the configured
-          no-improvement timeout (default: 15 seconds) without an improvement in its used-area
-          utilization. An improvement restarts that timer. After all sheets are processed,
-          partitioning restarts from the first sheet. The total time limit and manual Stop take
-          priority, so a short total budget may expire before later sheets are processed. The best
-          validated plan prioritizes fewer unplaced parts, higher-priority stock use, fewer sheets,
-          more parts on earlier sheets, then a shorter combined used length. Automatic stops after 3
-          rounds without improvement.
+          In sheet mode, the selected time is the total search budget for all sheets. Each sheet
+          alternates insertion, timed compression (default: 10 seconds), and insertion again. After
+          the configured number of consecutive insertion failures (default: 3), the solver moves to
+          the next sheet. A successful insertion resets the failure count. If all parts fit on one
+          sheet, compression continues in configured-duration slices until the total deadline or
+          manual Stop; in Automatic mode it continues until Stop. If several sheets are needed, the
+          last sheet is compressed once when the remaining parts are placed. The same flow applies
+          to every rotation rule, including continuous rotations. The total time limit and manual
+          Stop can interrupt any stage, so a short total budget may expire before later sheets are
+          processed. The best validated layout found so far is kept.
         </p>
         <p className="muted">
           Settings apply to the next run. They do not change the current solution.

@@ -91,7 +91,7 @@ export function LiveView() {
               </div>
               <span className="muted">
                 {batch
-                  ? `${completed?.length ?? 0} sheets in the current round · ${currentResult?.unplaced?.reduce((sum, part) => sum + part.quantity, 0) ?? copyCount(runJob?.parts ?? [])} parts remaining. Each sheet is optimized until utilization has not improved for ${runJob?.settings.sheetStagnationSeconds ?? 15} seconds, then the next sheet is processed. After the last sheet, a new partition is tried.`
+                  ? `${completed?.length ?? 0} sheets processed · ${currentResult?.unplaced?.reduce((sum, part) => sum + part.quantity, 0) ?? copyCount(runJob?.parts ?? [])} parts remaining. Each sheet alternates insertion, ${runJob?.settings.sheetCompressionSeconds ?? 10}-second compression, and insertion again. After ${runJob?.settings.sheetInsertionFailures ?? 3} consecutive insertion failures, the next sheet is processed; a successful insertion resets the count. If all parts fit on one sheet, compression continues until the total deadline or Stop (Automatic: until Stop). Otherwise, the last sheet is compressed once after all remaining parts are placed. This applies to every rotation rule. The total time limit and Stop can interrupt any stage.`
                   : 'Of the best valid layout so far.'}
               </span>
               <div className="stack">
@@ -100,7 +100,7 @@ export function LiveView() {
                   {limit
                     ? ` of ${formatSeconds(limit)}${batch ? ' total search time' : ''}`
                     : batch
-                      ? ' · stops after 3 rounds without improvement'
+                      ? ' · one-sheet complete layouts keep compressing until Stop'
                       : ' · stops when the search stalls'}
                 </span>
                 {limit && (
@@ -129,8 +129,8 @@ export function LiveView() {
               )}
               <p className="muted">
                 {batch
-                  ? currentResult?.roundIndex !== undefined
-                    ? `Round ${currentResult.roundIndex + 1}${currentResult.currentSheetIndex !== undefined ? ` · Sheet ${currentResult.currentSheetIndex + 1}` : ''} · `
+                  ? currentResult?.currentSheetIndex !== undefined
+                    ? `Sheet ${currentResult.currentSheetIndex + 1} · `
                     : ''
                   : solver.phase
                     ? `${solver.phase} · `
@@ -156,9 +156,7 @@ export function LiveView() {
           runJob && (
             <>
               <p className="muted">
-                {batch
-                  ? 'All validated sheets of the current round · the best round is saved separately'
-                  : 'Live search and best valid layout'}
+                {batch ? 'All validated sheets so far' : 'Live search and best valid layout'}
               </p>
               {!batch && (
                 <div className="segmented" role="group" aria-label="Layout shown">
@@ -251,7 +249,7 @@ function NextRun({ onSolution }: { onSolution?: () => void }) {
           {settings.timeLimitSeconds
             ? `${project.stock.packing === 'sheets' ? 'total search time: ' : 'after '}${formatSeconds(settings.timeLimitSeconds)}`
             : project.stock.packing === 'sheets'
-              ? 'after 3 rounds without improvement'
+              ? 'one-sheet complete layouts: manual Stop; otherwise automatic'
               : 'when the search stalls'}
         </dd>
         <dt>Search</dt>

@@ -200,14 +200,22 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
       s.sheetCount > LIMITS.copies)
   )
     throw Error('Invalid sheet count.');
-  const sheetStagnationSeconds =
-    s.sheetStagnationSeconds === undefined ? 15 : s.sheetStagnationSeconds;
+  const sheetCompressionSeconds =
+    s.sheetCompressionSeconds === undefined ? 10 : s.sheetCompressionSeconds;
   if (
-    !Number.isInteger(sheetStagnationSeconds) ||
-    sheetStagnationSeconds < 1 ||
-    sheetStagnationSeconds > 600
+    !Number.isInteger(sheetCompressionSeconds) ||
+    sheetCompressionSeconds < 1 ||
+    sheetCompressionSeconds > 600
   )
-    throw Error('Sheet no-improvement timeout must be a whole number from 1 to 600 seconds.');
+    throw Error('Sheet compression duration must be a whole number from 1 to 600 seconds.');
+  const sheetInsertionFailures =
+    s.sheetInsertionFailures === undefined ? 3 : s.sheetInsertionFailures;
+  if (
+    !Number.isInteger(sheetInsertionFailures) ||
+    sheetInsertionFailures < 1 ||
+    sheetInsertionFailures > 100
+  )
+    throw Error('Sheet insertion failures must be a whole number from 1 to 100.');
   const parts = doc.parts.map(normalizePart);
   if (new Set(parts.map((p) => p.id)).size !== parts.length)
     throw Error('Part IDs must be unique.');
@@ -226,5 +234,9 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
     (sheetStock.widthMm !== s.materialWidthMm || sheetStock.lengthMm !== s.sheetLengthMm)
   )
     throw Error('Sheet snapshot dimensions differ from job.');
-  return { ...doc, settings: { ...s, sheetStocks, sheetStock, sheetStagnationSeconds }, parts };
+  return {
+    ...doc,
+    settings: { ...s, sheetStocks, sheetStock, sheetCompressionSeconds, sheetInsertionFailures },
+    parts,
+  };
 }
