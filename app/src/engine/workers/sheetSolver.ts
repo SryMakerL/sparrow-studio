@@ -83,6 +83,7 @@ export function sheetStripSolver(revision: number, threads?: number): StripAttem
     session?.close();
     session = undefined;
   };
+  attempt.waitForIdle = () => session?.waitForIdle() ?? Promise.resolve();
   attempt.acceptCandidate = (result) => session?.accept(result);
   attempt.forkSheet = () => sheetStripSolver(revision, threads);
   return attempt;

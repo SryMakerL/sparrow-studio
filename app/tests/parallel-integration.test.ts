@@ -65,14 +65,33 @@ it('initializes a conserved plan then uses independent parallel board solvers', 
   const initial: StripAttempt = async (child) => layout(child);
   initial.forkSheet = () => {
     const id = forks++;
-    const solve: StripAttempt = async (child) => {
+    let idle = Promise.resolve();
+    let signal: AbortSignal | undefined;
+    const solve: StripAttempt = async (child, nextSignal) => {
+      signal = nextSignal;
       active++;
       peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      active--;
+      idle = new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 10);
+        nextSignal?.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
+      }).then(() => {
+        active--;
+      });
+      await idle;
       return layout(child);
     };
-    solve.endSheet = () => closed.push(id);
+    solve.waitForIdle = () => idle;
+    solve.endSheet = () => {
+      expect(signal?.aborted).toBe(true);
+      closed.push(id);
+    };
     return solve;
   };
   const snapshots: Result[] = [];

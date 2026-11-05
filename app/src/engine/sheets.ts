@@ -24,6 +24,7 @@ export type StripAttempt = ((
   beginSheet?: (catalog: Job, signal?: AbortSignal) => void | Promise<void>;
   endSheet?: () => void;
   acceptCandidate?: (result: Result) => void;
+  waitForIdle?: () => Promise<void>;
   forkSheet?: () => StripAttempt;
   continueSheet?: StripAttempt;
 };

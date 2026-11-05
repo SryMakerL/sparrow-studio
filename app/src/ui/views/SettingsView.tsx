@@ -250,17 +250,16 @@ function SettingsExplanation({ item }: { item: Item }) {
           far is kept.
         </p>
         <p className="muted">
-          In sheet mode, the selected time is the total search budget for all sheets. Each sheet
-          alternates insertion, timed compression (default: 10 seconds), and insertion again. After
-          the configured number of consecutive insertion failures (default: 3), the solver moves to
-          the next sheet. A successful insertion resets the failure count. If all parts fit on one
-          sheet, compression continues in configured-duration slices until the total deadline or
-          manual Stop; in Automatic mode it continues until Stop. For multiple sheets, boards
-          compress in parallel, then the solver fills earlier boards first by moving suitable parts
-          from the last board toward the front. Each move is validated before both boards are
-          updated. The same flow applies to every rotation rule, including continuous rotations. The
-          total time limit and manual Stop can interrupt any stage, so a short total budget may
-          expire before later sheets are processed. The best validated layout found so far is kept.
+          In sheet mode, each board compresses independently. The compression duration (default: 10
+          seconds) determines when that board requests an insertion check; other boards do not wait
+          for it. Insertion checks use a single front-to-back queue and draw parts from the last
+          board toward the front. Only the target and current source pause for a transfer;
+          unaffected boards keep compressing within the CPU budget. A successful insertion resets
+          the board's failure count; the configured consecutive failure limit stops that board's
+          checks. Resident sessions are retained separately from the compute concurrency limit. If
+          all parts fit on one sheet, compression continues until the total deadline or manual Stop;
+          in Automatic mode it continues until Stop. Every transfer is validated and committed
+          atomically. The total deadline and Stop apply to all boards.
         </p>
         <p className="muted">
           Settings apply to the next run. They do not change the current solution.

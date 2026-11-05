@@ -100,6 +100,7 @@ function factory(
     const solve: StripAttempt = (...args) => run(index, ...args);
     solve.beginSheet = vi.fn();
     solve.endSheet = vi.fn();
+    solve.waitForIdle = vi.fn(async () => {});
     sessions.push(solve);
     return solve;
   };
@@ -117,127 +118,287 @@ afterEach(() => {
 });
 
 describe('parallel board optimization', () => {
-  it('reuses resident sessions across fill and compression waves and closes them once', async () => {
-    const { job, initial } = fixture([['a'], ['b']]);
+  it('reuses resident idle sessions and balances every opened generation on completion', async () => {
+    const { job, initial } = fixture([['a'], ['b'], ['c']]);
     job.settings.sheetConcurrency = 2;
-    const { create, sessions } = factory(async () => undefined);
-    const pending = optimizeParallelSheets(job, initial, create, { deadline: 10_000 });
-    await vi.advanceTimersByTimeAsync(1000);
+    const resident = new Set<number>();
+    const uses = new Map<number, number>();
+    let reused = false;
+    const { create, sessions } = factory(async (index) => {
+      expect(resident.has(index)).toBe(true);
+      const count = (uses.get(index) ?? 0) + 1;
+      uses.set(index, count);
+      if (count > 1) reused = true;
+    });
+    const start = () => {
+      const solve = create();
+      const index = sessions.length - 1;
+      solve.beginSheet = vi.fn(() => {
+        expect(resident.has(index)).toBe(false);
+        resident.add(index);
+        uses.set(index, 0);
+      });
+      solve.endSheet = vi.fn(() => expect(resident.delete(index)).toBe(true));
+      return solve;
+    };
+    const pending = optimizeParallelSheets(job, initial, start, { deadline: 10_000 });
+    await vi.advanceTimersByTimeAsync(10_000);
     await pending;
+    expect(sessions).toHaveLength(3);
+    expect(reused).toBe(true);
+    expect(resident.size).toBe(0);
     for (const session of sessions) {
-      expect(session.beginSheet).toHaveBeenCalledTimes(1);
-      expect(session.endSheet).toHaveBeenCalledTimes(1);
+      const opened = vi.mocked(session.beginSheet!).mock.calls.length;
+      expect(session.endSheet).toHaveBeenCalledTimes(opened);
+      if (opened) expect(session.waitForIdle).toHaveBeenCalled();
     }
   });
 
-  it('evicts only idle sessions within the resident capacity and cleans up on completion', async () => {
+  it.each([1, 3, 6, 8])(
+    'separates resident sessions from the compute ceiling of %s',
+    async (concurrency) => {
+      const { job, initial } = fixture(Array.from({ length: 9 }, () => ['a']));
+      job.settings.sheetConcurrency = concurrency;
+      const controller = new AbortController();
+      const resident = new Set<number>();
+      const busy = new Set<number>();
+      const compressed = new Set<number>();
+      let residentPeak = 0;
+      let computePeak = 0;
+      const { create, sessions } = factory(async (index, child, signal, _offer, _budget, warm) => {
+        expect(resident.has(index)).toBe(true);
+        busy.add(index);
+        signal?.addEventListener('abort', () => busy.delete(index), { once: true });
+        computePeak = Math.max(computePeak, busy.size);
+        try {
+          if (warm && count(child) === warm.placements.length) {
+            compressed.add(index);
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, 20);
+              signal?.addEventListener(
+                'abort',
+                () => {
+                  clearTimeout(timer);
+                  resolve();
+                },
+                { once: true },
+              );
+            });
+          }
+        } finally {
+          busy.delete(index);
+        }
+      });
+      const open = () => {
+        const solve = create();
+        const index = sessions.length - 1;
+        solve.beginSheet = vi.fn(() => {
+          expect(resident.has(index)).toBe(false);
+          resident.add(index);
+          residentPeak = Math.max(residentPeak, resident.size);
+        });
+        solve.endSheet = vi.fn(() => {
+          expect(busy.has(index)).toBe(false);
+          expect(resident.delete(index)).toBe(true);
+        });
+        return solve;
+      };
+      const pending = optimizeParallelSheets(job, initial, open, {
+        deadline: Infinity,
+        signal: controller.signal,
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      controller.abort();
+      const result = await pending;
+      expect(computePeak).toBe(concurrency);
+      expect(residentPeak).toBe(8);
+      expect(compressed.size).toBe(9);
+      expect(resident.size).toBe(0);
+      expect(validate(job, result).status).toBe('passed');
+    },
+  );
+
+  it('fills targets serially in board-index order while compressors run independently', async () => {
     const { job, initial } = fixture([['a'], ['b'], ['c']]);
-    job.settings.sheetConcurrency = 2;
-    job.settings.sheetInsertionFailures = 2;
-    const resident = new Set<number>();
-    const busy = new Set<number>();
-    let peak = 0;
-    let opens = 0;
-    let closes = 0;
-    const sessions: StripAttempt[] = [];
-    const create = () => {
-      const id = sessions.length;
-      const solve: StripAttempt = async (child, _signal, _offer, _budget, warm) => {
-        expect(resident.has(id)).toBe(true);
-        busy.add(id);
-        if (warm && count(child) === warm.placements.length)
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        busy.delete(id);
-        return undefined;
-      };
-      solve.beginSheet = () => {
-        expect(resident.has(id)).toBe(false);
-        resident.add(id);
-        opens++;
-        peak = Math.max(peak, resident.size);
-      };
-      solve.endSheet = () => {
-        expect(busy.has(id)).toBe(false);
-        expect(resident.delete(id)).toBe(true);
-        closes++;
-      };
-      sessions.push(solve);
-      return solve;
-    };
-    const pending = optimizeParallelSheets(job, initial, create, { deadline: 10_000 });
+    job.settings.sheetConcurrency = 3;
+    const order: number[] = [];
+    let filling = 0;
+    const compressing = new Set<number>();
+    let compressionDuringFill = false;
+    const { create } = factory(async (index, child, signal, _offer, _budget, warm) => {
+      if (warm && count(child) === warm.placements.length) {
+        compressing.add(index);
+        signal?.addEventListener('abort', () => compressing.delete(index), { once: true });
+        if (filling) compressionDuringFill = true;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        compressing.delete(index);
+        return;
+      }
+      if (compressing.size) compressionDuringFill = true;
+      expect(filling++).toBe(0);
+      order.push(index);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      filling--;
+    });
+    const pending = optimizeParallelSheets(job, initial, create, {
+      deadline: performance.now() + 1000,
+    });
     await vi.advanceTimersByTimeAsync(1000);
     await pending;
-    expect(peak).toBe(2);
-    expect(opens).toBeGreaterThan(3);
-    expect(closes).toBe(opens);
-    expect(resident.size).toBe(0);
+    expect(order.slice(0, 6)).toEqual([0, 0, 0, 0, 1, 1]);
+    expect(compressionDuringFill).toBe(true);
   });
 
-  it.each([1, 3])(
-    'does not count initialization as a failure and retries insertion after each of %s compression waves',
-    async (limit) => {
-      const { job, initial } = fixture([['a'], ['b']]);
-      job.settings.sheetInsertionFailures = limit;
-      const calls: string[] = [];
-      const { create } = factory(async (index, child, _signal, _offer, _budget, warm) => {
-        if (warm && count(child) === warm.placements.length) {
-          calls.push(`compress:${index}`);
+  it('pauses a source and waits for idle before deletion while unrelated compression continues', async () => {
+    const { job, initial } = fixture([['a'], ['b'], ['c']]);
+    job.settings.sheetConcurrency = 3;
+    const controller = new AbortController();
+    let enabled = false;
+    let sourceIdleConfirmed = false;
+    let releaseIdle!: () => void;
+    const sourceIdle = new Promise<void>((resolve) => {
+      releaseIdle = () => {
+        sourceIdleConfirmed = true;
+        resolve();
+      };
+    });
+    let sourceSignal: AbortSignal | undefined;
+    let closesAtSourceStart = 0;
+    let unrelatedRuns = 0;
+    let deleted = false;
+    let unrelatedStillRunning = false;
+    const { create, sessions } = factory(async (index, child, signal, _offer, budget, warm) => {
+      if (warm && count(child) === warm.placements.length) {
+        if (index === 2) {
+          sourceSignal = signal;
+          closesAtSourceStart = vi.mocked(sessions[2].endSheet!).mock.calls.length;
+          enabled = true;
+          return new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, budget!);
+            signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+          });
+        }
+        if (index === 1) {
+          unrelatedRuns++;
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 20);
+            signal?.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true },
+            );
+          });
           return;
         }
-        calls.push(warm ? 'warm' : 'cold');
-        return undefined;
-      });
-      const onResult = vi.fn();
-      const pending = optimizeParallelSheets(job, initial, create, {
-        deadline: performance.now() + 20_000,
-        onResult,
-      });
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(await pending).toEqual(initial);
-      expect(calls).toEqual([
-        'warm',
-        'cold',
-        ...Array.from({ length: limit }, () => ['compress:0', 'compress:1', 'warm', 'cold']).flat(),
-      ]);
-      expect(onResult).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each([1, 3, 6, 8])(
-    'honors the configured concurrency ceiling of %s and visits every board once per wave',
-    async (concurrency) => {
-      const { job, initial } = fixture(Array.from({ length: 7 }, () => ['a']));
-      job.settings.sheetConcurrency = concurrency;
-      job.settings.sheetInsertionFailures = 2;
-      let running = 0,
-        peak = 0;
-      const compressed: number[] = [];
-      const { create, sessions } = factory(async (index, child, _signal, _offer, budget, warm) => {
-        if (!warm || count(child) !== warm.placements.length) return;
-        compressed.push(index);
-        expect(budget).toBe(1000);
-        running++;
-        peak = Math.max(peak, running);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        running--;
-        return row(child);
-      });
-      const pending = optimizeParallelSheets(job, initial, create, { deadline: 10_000 });
-      await vi.advanceTimersByTimeAsync(2000);
-      const result = await pending;
-      expect(peak).toBe(Math.min(concurrency, 7));
-      expect(compressed).toEqual([0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6]);
-      expect(result.sheets).toHaveLength(7);
-      expect(validate(job, result).status).toBe('passed');
-      expect(sessions.every((session) => vi.mocked(session.endSheet!).mock.calls.length > 0)).toBe(
-        true,
-      );
-      for (const session of sessions) {
-        expect(vi.mocked(session.beginSheet!).mock.calls[0][0].parts).toEqual(job.parts);
-        expect(vi.mocked(session.beginSheet!).mock.calls[0][0].settings.sheetCount).toBeUndefined();
+        if (index === 2) return new Promise(() => {});
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return;
       }
-    },
-  );
+      if (enabled && index === 0 && child.parts.some((part) => part.id === 'c')) return row(child);
+    });
+    const start = () => {
+      const solve = create();
+      if (sessions.length === 3) solve.waitForIdle = () => sourceIdle;
+      return solve;
+    };
+    const pending = optimizeParallelSheets(job, initial, start, {
+      deadline: Infinity,
+      signal: controller.signal,
+      onResult: (result) => {
+        if (result.sheets!.length === 2) {
+          expect(sourceIdleConfirmed).toBe(true);
+          deleted = true;
+          unrelatedStillRunning = unrelatedRuns > 1;
+        }
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1050);
+    expect(sourceSignal?.aborted).toBe(true);
+    expect(deleted).toBe(false);
+    expect(sourceIdleConfirmed).toBe(false);
+    expect(sessions[2].endSheet).toHaveBeenCalledTimes(closesAtSourceStart);
+    const runsWhilePaused = unrelatedRuns;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(unrelatedRuns).toBeGreaterThan(runsWhilePaused);
+    expect(deleted).toBe(false);
+    releaseIdle();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(deleted).toBe(true);
+    expect(sessions[2].endSheet).toHaveBeenCalledTimes(closesAtSourceStart + 1);
+    expect(unrelatedStillRunning).toBe(true);
+    controller.abort();
+    const result = await pending;
+    expect(validate(job, result).status).toBe('passed');
+  });
+
+  it('hard-stops all active workers on global Stop without waiting for unresponsive idle acknowledgements', async () => {
+    const { job, initial } = fixture([['a'], ['b'], ['c']]);
+    job.settings.sheetConcurrency = 3;
+    const controller = new AbortController();
+    const signals = new Map<number, AbortSignal>();
+    const idle = new Map<number, () => void>();
+    const acknowledged = new Set<number>();
+    const resident = new Set<number>();
+    const { create, sessions } = factory(async (index, child, signal, _offer, _budget, warm) => {
+      if (!warm || count(child) !== warm.placements.length) return;
+      signals.set(index, signal!);
+      return new Promise(() => {});
+    });
+    const start = () => {
+      const solve = create();
+      const index = sessions.length - 1;
+      solve.waitForIdle = () =>
+        signals.has(index)
+          ? new Promise<void>((resolve) =>
+              idle.set(index, () => {
+                acknowledged.add(index);
+                resolve();
+              }),
+            )
+          : Promise.resolve();
+      solve.beginSheet = vi.fn(() => {
+        expect(resident.has(index)).toBe(false);
+        resident.add(index);
+      });
+      solve.endSheet = vi.fn(() => {
+        expect(resident.delete(index)).toBe(true);
+        if (signals.has(index)) expect(signals.get(index)!.aborted).toBe(true);
+        idle.get(index)?.();
+      });
+      return solve;
+    };
+    let settled = false;
+    const pending = optimizeParallelSheets(job, initial, start, {
+      deadline: Infinity,
+      signal: controller.signal,
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(signals.size).toBeGreaterThan(1);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect([...signals.values()].every((signal) => signal.aborted)).toBe(true);
+    const settledBeforeIdle = settled;
+    const closedBeforeIdle = sessions.some(
+      (session) => vi.mocked(session.endSheet!).mock.calls.length > 0,
+    );
+    for (const resolve of idle.values()) resolve();
+    await pending;
+    expect(settledBeforeIdle).toBe(true);
+    expect(closedBeforeIdle).toBe(true);
+    expect(acknowledged.size).toBe(idle.size);
+    expect(resident.size).toBe(0);
+    for (const session of sessions) {
+      expect(session.endSheet).toHaveBeenCalledTimes(
+        vi.mocked(session.beginSheet!).mock.calls.length,
+      );
+    }
+  });
 
   it('fills target zero from pending then the last source in priority order, publishes only atomic snapshots and deletes empty tails', async () => {
     const { job, initial } = fixture([['a'], ['b'], ['c', 'd']], ['e']);
@@ -275,8 +436,8 @@ describe('parallel board optimization', () => {
     expect(snapshots.map((snapshot) => snapshot.sheets!.length)).toEqual([3, 3, 2, 1]);
     expect(initial).toEqual(before);
     expect(result.sheets).toHaveLength(1);
-    expect(sessions[2].beginSheet).not.toHaveBeenCalled();
-    expect(sessions[2].endSheet).not.toHaveBeenCalled();
+    expect(sessions[2].beginSheet).toHaveBeenCalledTimes(1);
+    expect(sessions[2].endSheet).toHaveBeenCalledTimes(1);
     expect(result.sheets![0].result.placements).toHaveLength(5);
   });
 
@@ -305,16 +466,23 @@ describe('parallel board optimization', () => {
     const { job, initial } = fixture([['a'], ['b']]);
     job.settings.sheetInsertionFailures = 1;
     const budgets: number[] = [];
+    const controller = new AbortController();
     const onResult = vi.fn();
     const { create } = factory(async (_index, child, _signal, _offer, budget, warm) => {
+      if (warm && count(child) === warm.placements.length) return;
       budgets.push(budget!);
       if (warm) return { ...row(child), placements: [] };
+      controller.abort();
       return undefined;
     });
-    const pending = optimizeParallelSheets(job, initial, create, { deadline: 20_000, onResult });
+    const pending = optimizeParallelSheets(job, initial, create, {
+      deadline: 20_000,
+      onResult,
+      signal: controller.signal,
+    });
     await vi.advanceTimersByTimeAsync(100);
     expect(await pending).toEqual(initial);
-    expect(budgets).toEqual([10_000, 2500, 1000, 1000, 10_000, 2500]);
+    expect(budgets).toEqual([10_000, 2500]);
     expect(onResult).not.toHaveBeenCalled();
   });
 
@@ -322,21 +490,26 @@ describe('parallel board optimization', () => {
     const { job, initial } = fixture([['a'], ['b']]);
     job.settings.sheetInsertionFailures = 1;
     const onResult = vi.fn();
+    const controller = new AbortController();
     let aggregateChecks = 0;
-    const { create } = factory(async (_index, child) => row(child));
+    const { create } = factory(async (_index, child, _signal, _offer, _budget, warm) =>
+      warm && count(child) === warm.placements.length ? undefined : row(child),
+    );
     const pending = optimizeParallelSheets(job, initial, create, {
       deadline: performance.now() + 20_000,
+      signal: controller.signal,
       onResult,
       validate: async (child, result) => {
         if (!result.sheets) return validate(child, result);
         aggregateChecks++;
         expect(validate(job, result).status).toBe('passed');
+        controller.abort();
         return { ...passed, status: 'failed', errors: ['aggregate rejected'] };
       },
     });
     await vi.advanceTimersByTimeAsync(100);
     expect(await pending).toEqual(initial);
-    expect(aggregateChecks).toBe(6);
+    expect(aggregateChecks).toBe(1);
     expect(onResult).not.toHaveBeenCalled();
   });
 
@@ -346,6 +519,7 @@ describe('parallel board optimization', () => {
     const budgets: number[] = [];
     const snapshots: Result[] = [];
     const { create } = factory(async (_index, child, _signal, _offer, budget, warm) => {
+      if (warm && count(child) === warm.placements.length) return;
       budgets.push(budget!);
       if (warm) throw Error('Warm start insertion failed: no placement');
       return row(child);
@@ -399,7 +573,9 @@ describe('parallel board optimization', () => {
       offer?.(lateResult!);
       await vi.advanceTimersByTimeAsync(1000);
       expect(onResult).not.toHaveBeenCalled();
-      expect(sessions[0].endSheet).toHaveBeenCalled();
+      expect(sessions.some((session) => vi.mocked(session.endSheet!).mock.calls.length > 0)).toBe(
+        true,
+      );
     },
   );
 
@@ -431,14 +607,25 @@ describe('parallel board optimization', () => {
     job.settings.sheetInsertionFailures = 3;
     const compressionCounts = [0, 0, 0];
     let moved = false;
-    const { create } = factory(async (index, child, _signal, _offer, _budget, warm) => {
+    const { create } = factory(async (index, child, signal, _offer, budget, warm) => {
       if (warm && count(child) === warm.placements.length) {
         compressionCounts[index]++;
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, budget!);
+          signal?.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
+        });
         return row(child, count(child) * 10 + 10 - compressionCounts[index]);
       }
       if (
         index === 0 &&
-        compressionCounts[0] === 1 &&
+        compressionCounts[0] >= 1 &&
         !moved &&
         child.parts.some((part) => part.id === 'b')
       ) {
@@ -450,10 +637,10 @@ describe('parallel board optimization', () => {
     const pending = optimizeParallelSheets(job, initial, create, {
       deadline: performance.now() + 20_000,
     });
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(20_000);
     const result = await pending;
     expect(moved).toBe(true);
-    expect(compressionCounts).toEqual([3, 3, 3]);
+    expect(compressionCounts.every((value) => value >= 3)).toBe(true);
     expect(result.sheets!.map((sheet) => count(sheet.job))).toEqual([2, 1, 1]);
     expect(validate(job, result).status).toBe('passed');
   });
@@ -469,7 +656,9 @@ describe('parallel board optimization', () => {
       const { create } = factory(async (_index, _child, signal, _offer, budget) => {
         signals.push(signal!);
         budgets.push(budget!);
-        return new Promise(() => {});
+        return new Promise<undefined>((resolve) => {
+          signal?.addEventListener('abort', () => resolve(undefined), { once: true });
+        });
       });
       let settled = false;
       const pending = optimizeParallelSheets(job, initial, create, {
@@ -488,7 +677,10 @@ describe('parallel board optimization', () => {
       expect(signals).toHaveLength(3);
       expect(signals.every((signal) => signal.aborted)).toBe(true);
       expect(budgets.slice(0, 2)).toEqual([1000, 1000]);
-      if (Number.isFinite(duration)) expect(budgets[2]).toBe(400);
+      if (Number.isFinite(duration)) {
+        expect(budgets[2]).toBeGreaterThan(0);
+        expect(budgets[2]).toBeLessThanOrEqual(500);
+      }
     },
   );
 

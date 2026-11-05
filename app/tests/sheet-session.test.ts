@@ -113,17 +113,32 @@ it('hard-stops a stuck session and reinitializes without stale snapshot IDs', as
   await expect(first).resolves.toBeUndefined();
   expect(posted.some((message) => message.type === 'stop')).toBe(true);
   const initial: Result = {
-    documentRevision: 1, solverRevision: 'external', seed: '42', elapsedSeconds: 0,
+    documentRevision: 1,
+    solverRevision: 'external',
+    seed: '42',
+    elapsedSeconds: 0,
     usedLengthMm: 30,
     placements: [{ partId: job.parts[0].id, copyIndex: 0, xMm: 20, yMm: 20, angleDeg: 0 }],
-    validation: { status: 'passed', overlapAreaMm2: 0, maxBoundaryViolationMm: 0, minClearanceMm: null, errors: [] },
+    validation: {
+      status: 'passed',
+      overlapAreaMm2: 0,
+      maxBoundaryViolationMm: 0,
+      minClearanceMm: null,
+      errors: [],
+    },
   };
   const second = session.attempt(job, undefined, undefined, 100, initial);
   await vi.advanceTimersByTimeAsync(1);
   expect(workers).toHaveLength(2);
   const steps = posted.filter((message) => message.type === 'session-step');
-  expect(steps[1]).toMatchObject({ initialSnapshot: undefined, retainSnapshot: undefined,
-    initialPlacement: { used_length_mm: 30, placements: [{ item_id: 0, rotation: 0, translation: [20, 20] }] } });
+  expect(steps[1]).toMatchObject({
+    initialSnapshot: undefined,
+    retainSnapshot: undefined,
+    initialPlacement: {
+      used_length_mm: 30,
+      placements: [{ item_id: 0, rotation: 0, translation: [20, 20] }],
+    },
+  });
   session.close();
   await expect(second).resolves.toBeUndefined();
 });
@@ -143,7 +158,12 @@ it.each([30_000, Infinity])(
         if (message.type === 'session-cancel')
           queueMicrotask(() =>
             this.onmessage?.({
-              data: { type: 'finished', runId: 1, documentRevision: 1, attemptId: message.attemptId },
+              data: {
+                type: 'finished',
+                runId: 1,
+                documentRevision: 1,
+                attemptId: message.attemptId,
+              },
             }),
           );
       }
@@ -174,10 +194,16 @@ it('restores an unknown snapshot as raw external coordinates using the full cata
     postMessage(message: Record<string, unknown>) {
       posted.push(message);
       if (message.type === 'session-init' || message.type === 'session-step')
-        queueMicrotask(() => this.onmessage?.({ data: {
-          type: message.type === 'session-init' ? 'session-ready' : 'finished',
-          runId: 1, documentRevision: 1, attemptId: message.attemptId,
-        } }));
+        queueMicrotask(() =>
+          this.onmessage?.({
+            data: {
+              type: message.type === 'session-init' ? 'session-ready' : 'finished',
+              runId: 1,
+              documentRevision: 1,
+              attemptId: message.attemptId,
+            },
+          }),
+        );
     }
   }
   vi.stubGlobal('Worker', MockWorker);
@@ -186,18 +212,34 @@ it('restores an unknown snapshot as raw external coordinates using the full cata
   job.parts[0].quantity = 0;
   const subset = { ...job, parts: [job.parts[1]] };
   const initial: Result = {
-    documentRevision: 1, solverRevision: 'external', seed: '42', elapsedSeconds: 0,
+    documentRevision: 1,
+    solverRevision: 'external',
+    seed: '42',
+    elapsedSeconds: 0,
     usedLengthMm: 45.123456789,
-    placements: [{ partId: 'second-type', copyIndex: 0, xMm: 30.123456789, yMm: 20.987654321, angleDeg: 0 }],
-    validation: { status: 'passed', overlapAreaMm2: 0, maxBoundaryViolationMm: 0, minClearanceMm: null, errors: [] },
+    placements: [
+      { partId: 'second-type', copyIndex: 0, xMm: 30.123456789, yMm: 20.987654321, angleDeg: 0 },
+    ],
+    validation: {
+      status: 'passed',
+      overlapAreaMm2: 0,
+      maxBoundaryViolationMm: 0,
+      minClearanceMm: null,
+      errors: [],
+    },
   };
   const session = new SheetWorkerSession(job, 1);
   await session.attempt(subset, undefined, undefined, 2500, initial);
-  const request = posted.find(message => message.type === 'session-step')!;
-  expect(request).toMatchObject({ quantities: [0, 1], initialSnapshot: undefined,
-    initialPlacement: { used_length_mm: initial.usedLengthMm, placements: [
-      { item_id: 1, rotation: 0, translation: [30.123456789, 20.987654321] },
-    ] }, mode: 'compress' });
+  const request = posted.find((message) => message.type === 'session-step')!;
+  expect(request).toMatchObject({
+    quantities: [0, 1],
+    initialSnapshot: undefined,
+    initialPlacement: {
+      used_length_mm: initial.usedLengthMm,
+      placements: [{ item_id: 1, rotation: 0, translation: [30.123456789, 20.987654321] }],
+    },
+    mode: 'compress',
+  });
   session.close();
 });
 
@@ -207,9 +249,16 @@ it('forks independent sheet sessions inheriting requested threads without droppi
     onmessage?: (event: { data: unknown }) => void;
     postMessage(message: Record<string, unknown>) {
       posted.push(message);
-      if (message.type === 'session-init') queueMicrotask(() => this.onmessage?.({ data: {
-        type: 'session-ready', runId: 1, documentRevision: 7,
-      } }));
+      if (message.type === 'session-init')
+        queueMicrotask(() =>
+          this.onmessage?.({
+            data: {
+              type: 'session-ready',
+              runId: 1,
+              documentRevision: 7,
+            },
+          }),
+        );
     }
   }
   vi.stubGlobal('Worker', MockWorker);
@@ -219,14 +268,55 @@ it('forks independent sheet sessions inheriting requested threads without droppi
   const job = catalog();
   job.parts.unshift({ ...job.parts[0], id: 'unused', quantity: 0 });
   await Promise.all([first.beginSheet!(job), second.beginSheet!(job)]);
-  expect(posted.filter(message => message.type === 'session-init')).toEqual([
+  expect(posted.filter((message) => message.type === 'session-init')).toEqual([
     expect.objectContaining({ threads: 6, document: job }),
     expect.objectContaining({ threads: 6, document: job }),
   ]);
   first.endSheet!();
-  expect(posted.filter(message => message.type === 'stop')).toHaveLength(1);
+  expect(posted.filter((message) => message.type === 'stop')).toHaveLength(1);
   second.endSheet!();
-  expect(posted.filter(message => message.type === 'stop')).toHaveLength(2);
+  expect(posted.filter((message) => message.type === 'stop')).toHaveLength(2);
+});
+
+it('waits for worker completion after a pause request without destroying the session', async () => {
+  vi.useFakeTimers();
+  let worker: MockWorker;
+  let attemptId: unknown;
+  const posted: Record<string, unknown>[] = [];
+  class MockWorker {
+    onmessage?: (event: { data: unknown }) => void;
+    constructor() {
+      worker = this;
+    }
+    postMessage(message: Record<string, unknown>) {
+      posted.push(message);
+      if (message.type === 'session-init')
+        queueMicrotask(() => this.send({ type: 'session-ready' }));
+      if (message.type === 'session-step') attemptId = message.attemptId;
+    }
+    send(message: Record<string, unknown>) {
+      this.onmessage?.({ data: { runId: 1, documentRevision: 1, ...message } });
+    }
+  }
+  vi.stubGlobal('Worker', MockWorker);
+  const session = new SheetWorkerSession(catalog(), 1);
+  const controller = new AbortController();
+  const pending = session.attempt(catalog(), controller.signal, undefined, 1000);
+  await vi.advanceTimersByTimeAsync(1);
+  controller.abort();
+  let idle = false;
+  const confirmed = session.waitForIdle().then(() => {
+    idle = true;
+  });
+  await vi.advanceTimersByTimeAsync(20);
+  expect(idle).toBe(false);
+  expect(posted.at(-1)?.type).toBe('session-cancel');
+  worker!.send({ type: 'finished', attemptId });
+  await confirmed;
+  await pending;
+  expect(idle).toBe(true);
+  expect(posted.some((message) => message.type === 'stop')).toBe(false);
+  session.close();
 });
 
 it('ignores stale candidates and keeps the worker on a cooperative cancellation', async () => {
