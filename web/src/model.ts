@@ -18,7 +18,7 @@ export type Result = { documentRevision: number; solverRevision: string; seed: s
 export type Project = Document & { schemaVersion: 1; revision: number; result?: Result };
 export const DEFAULT_SETTINGS: Settings = { materialWidthMm: 1000, clearanceMm: 0, timeLimitSeconds: null };
 export const SOLVER_REVISION = '7f0e10f946f70a86138d3938548a13ee46464f39+studio-static-stock-1';
-export const LIMITS = { copies: 500, verticesPerPart: 5000, verticesTotal: 100000, extent: 100000 };
+export const LIMITS = { extent: 100000 };
 // DXF exports draw the sheet on this layer; DXF import leaves it out unless chosen, so exports reimport as their parts.
 export const SHEET_LAYER = 'SPARROW_SHEET';
 export const defaultDXFLayers = (layers: string[]) => layers.filter((layer) => layer !== SHEET_LAYER);

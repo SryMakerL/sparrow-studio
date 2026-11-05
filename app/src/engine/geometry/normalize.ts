@@ -74,8 +74,8 @@ export function ringCrosses(a: Ring, b: Ring) {
   );
 }
 export function normalizeRing(value: unknown): Ring {
-  if (!Array.isArray(value) || value.length > LIMITS.verticesPerPart + 1)
-    throw Error('Contour exceeds 5,000 vertices or is not an array.');
+  if (!Array.isArray(value))
+    throw Error('Contour must be an array.');
   const ring: Ring = [];
   for (const p of value) {
     if (
@@ -96,7 +96,7 @@ export function normalizeRing(value: unknown): Ring {
     if (orient(a, b, c) === 0 && (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1]) < 0)
       throw Error('Contour doubles back along an adjacent edge.');
   }
-  // ponytail: O(n²) validation is bounded at 5,000 vertices and runs in a worker;
+  // Pairwise contour validation runs in a worker.
   // replace with a sweep line if measured import latency requires it.
   for (let i = 0; i < ring.length; i++)
     for (let j = i + 1; j < ring.length; j++) {
@@ -118,8 +118,8 @@ export function normalizePart(part: Part): Part {
   const priority = part.priority === undefined ? 0 : part.priority;
   if (!Number.isInteger(priority) || priority < 0 || priority > 2147483647)
     throw Error('Part priority must be a whole number from 0 to 2147483647.');
-  if (!Number.isInteger(part.quantity) || part.quantity < 0 || part.quantity > LIMITS.copies)
-    throw Error('Quantity must be a whole number from 0 to 500.');
+  if (!Number.isSafeInteger(part.quantity) || part.quantity < 0)
+    throw Error('Quantity must be a nonnegative safe integer.');
   if (
     !Number.isFinite(part.approximationToleranceMm) ||
     part.approximationToleranceMm < 0 ||
@@ -138,8 +138,6 @@ export function normalizePart(part: Part): Part {
   const outer = normalizeRing(part.outer);
   if (!Array.isArray(part.holes)) throw Error('Holes must be an array.');
   const holes = part.holes.map(normalizeRing);
-  if (outer.length + holes.reduce((n, h) => n + h.length, 0) > LIMITS.verticesPerPart)
-    throw Error('Part exceeds 5,000 vertices including holes.');
   for (let i = 0; i < holes.length; i++) {
     if (!inside(holes[i][0], outer) || ringCrosses(outer, holes[i]))
       throw Error('Hole must be strictly inside its outer contour.');
@@ -168,10 +166,9 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
     typeof doc.name !== 'string' ||
     !doc.name.trim() ||
     !Array.isArray(doc.parts) ||
-    (!allowEmpty && !doc.parts.length) ||
-    doc.parts.length > 500
+    (!allowEmpty && !doc.parts.length)
   )
-    throw Error('Project needs 1–500 part types.');
+    throw Error('Project needs at least one part type.');
   const s = doc.settings;
   if (
     !s ||
@@ -195,9 +192,8 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
   if (
     s.sheetCount !== undefined &&
     (s.sheetLengthMm === undefined ||
-      !Number.isInteger(s.sheetCount) ||
-      s.sheetCount < 1 ||
-      s.sheetCount > LIMITS.copies)
+      !Number.isSafeInteger(s.sheetCount) ||
+      s.sheetCount < 1)
   )
     throw Error('Invalid sheet count.');
   const sheetCompressionSeconds =
@@ -219,14 +215,6 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
   const parts = doc.parts.map(normalizePart);
   if (new Set(parts.map((p) => p.id)).size !== parts.length)
     throw Error('Part IDs must be unique.');
-  if (
-    parts.reduce((n, p) => n + p.quantity, 0) > LIMITS.copies ||
-    parts.reduce(
-      (n, p) => n + p.quantity * (p.outer.length + p.holes.reduce((m, h) => m + h.length, 0)),
-      0,
-    ) > LIMITS.verticesTotal
-  )
-    throw Error('Project exceeds 500 copies or 100,000 demanded vertices.');
   const sheetStocks = s.sheetStocks === undefined ? undefined : normalizeSheetStocks(s.sheetStocks);
   const sheetStock = s.sheetStock === undefined ? undefined : normalizeSheetStock(s.sheetStock);
   if (

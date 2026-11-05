@@ -76,7 +76,7 @@ function guard(r:DxfRecord) {
   }
   if(r.type==='LWPOLYLINE') {
     const count=finite(value(r,90));
-    if(!Number.isInteger(count)||count<2||count>5000||count!==r.groups.filter(g=>g[0]===10).length)throw Error('Invalid LWPOLYLINE vertex count.');
+    if(!Number.isInteger(count)||count<2||count!==r.groups.filter(g=>g[0]===10).length)throw Error('Invalid LWPOLYLINE vertex count.');
   }
 }
 function bulge(from:Point,to:Point,b:number,tolerance:number,output:Ring) {
@@ -90,7 +90,7 @@ function bulge(from:Point,to:Point,b:number,tolerance:number,output:Ring) {
 }
 function spline(entity:DxfEntity,tolerance:number):Ring {
   const points=entity.controlPoints??[],knots=entity.knots??[],degree=entity.degree??0;
-  if(!Number.isInteger(degree)||degree<1||degree>3||points.length<=degree||points.length>5000)throw Error('SPLINE needs degree 1–3 and a valid control-point count.');
+  if(!Number.isInteger(degree)||degree<1||degree>3||points.length<=degree)throw Error('SPLINE needs degree 1–3 and a valid control-point count.');
   const weights=entity.weights??points.map(()=>1);
   if(weights.length!==points.length||weights.some(w=>!Number.isFinite(w)||w<=0))throw Error('SPLINE weights must be finite and positive.');
   if(knots.length!==points.length+degree+1||knots.some((v,i)=>!Number.isFinite(v)||i>0&&v<knots[i-1]))throw Error('Invalid SPLINE knot vector.');
@@ -177,7 +177,7 @@ export function importDXF(text:string,fileName:string,options:DXFOptions):Import
   const byHandle=new Map(records.map(r=>[r.id,r])),blocks=new Map(parsed.blocks.map(b=>[b.name,b]));
   const supported=['LINE','ARC','CIRCLE','ELLIPSE','LWPOLYLINE','POLYLINE','SPLINE','INSERT'];
   for(const r of records)if(!supported.includes(r.type)&&!['BLOCK','ENDBLK'].includes(r.type))unsupported.set(r.type,(unsupported.get(r.type)??0)+1);
-  const layers:string[]=[],contours:Contour[]=[],chains:Chain[]=[];let totalVertices=0,expanded=0;
+  const layers:string[]=[],contours:Contour[]=[],chains:Chain[]=[];let expanded=0;
   const visit=(entity:DxfEntity,parent:Matrix,inheritedLayer:string,path:string[])=>{
     if(++expanded>10_000)throw Error('DXF exceeds 10,000 expanded entities.');
     const r=byHandle.get(entity.handle);if(!r||!supported.includes(entity.type))return;
@@ -232,7 +232,7 @@ export function importDXF(text:string,fileName:string,options:DXFOptions):Import
         ellipse(center,u,v,start,sweep,tolerance,ring);curved=true;if(closed)ring.pop();
       }else {
         const vertices=entity.vertices??[];
-        if(vertices.length<2||vertices.length>5000)throw Error('Polyline needs 2–5,000 vertices.');
+        if(vertices.length<2)throw Error('Polyline needs at least two vertices.');
         const points=vertices.map(point);closed=!!entity.closed;ring=[points[0]];
         for(let i=0;i<points.length-(closed?0:1);i++) {const b=vertices[i].bulge??0;bulge(points[i],points[(i+1)%points.length],b,tolerance,ring);curved ||= b!==0;}
         if(closed)ring.pop();
@@ -240,9 +240,8 @@ export function importDXF(text:string,fileName:string,options:DXFOptions):Import
       }
       ring=ring.map(p=>apply(matrix,p));
       if(ring.some(p=>!p.every(v=>Number.isFinite(v)&&Math.abs(v)<=100_000)))throw Error('Coordinates exceed the 100,000 mm limit.');
-      totalVertices+=ring.length;if(totalVertices>100_000)throw Error('DXF exceeds 100,000 vertices.');
       if(closed)contours.push({ring,entityId:r.id,curved});else chains.push({points:ring,id:r.id,curved});
-    }catch(error){if(expanded>10_000||totalVertices>100_000)throw error;issues.push(`${r.id} on ${layer}: ${error instanceof Error?error.message:String(error)}`);}
+    }catch(error){if(expanded>10_000)throw error;issues.push(`${r.id} on ${layer}: ${error instanceof Error?error.message:String(error)}`);}
   };
   for(const entity of parsed.entities)visit(entity,[scale,0,0,scale,0,0],'0',[]);
   layers.sort();

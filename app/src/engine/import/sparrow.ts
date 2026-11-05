@@ -18,7 +18,7 @@ export function localize(part: Part): Part {
 export function importSparrow(text: string,fileName: string,scale: number): ImportReview {
   if(!Number.isFinite(scale) || scale<=0) throw Error('Choose a positive millimeter scale.');
   const input=record(JSON.parse(text));
-  if(typeof input.name!=='string' || !Array.isArray(input.items) || input.items.length>500) throw Error('Expected a sparrow ExtSPInstance with name and items.');
+  if(typeof input.name!=='string' || !Array.isArray(input.items)) throw Error('Expected a sparrow ExtSPInstance with name and items.');
   const ids=new Set<number>();
   const parts=input.items.map(raw=>{
     const item=record(raw),shape=record(item.shape),id=number(item.id);

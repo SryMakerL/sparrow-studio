@@ -36,10 +36,9 @@ export function parseProject(value: unknown): ProjectDocument {
     (!finite(stock.lengthMm) ||
       (stock.lengthMm as number) <= 0 ||
       (stock.lengthMm as number) > LIMITS.extent ||
-      !Number.isInteger(stock.quantity) ||
+      !Number.isSafeInteger(stock.quantity) ||
       (stock.quantity as number) <
-        (Array.isArray(stock.sheets) && stock.sheets.length === 0 ? 0 : 1) ||
-      (stock.quantity as number) > LIMITS.copies)
+        (Array.isArray(stock.sheets) && stock.sheets.length === 0 ? 0 : 1))
   )
     return fail('invalid sheets.');
   const strip = stock.strip;

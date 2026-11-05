@@ -182,8 +182,8 @@ export function startBlockers(project: ProjectDocument): string[] {
   const copies = copyCount(project.parts);
   if (!project.parts.length) reasons.push('Import parts to nest.');
   else if (copies === 0) reasons.push('Give at least one part a quantity above zero.');
-  if (copies > LIMITS.copies)
-    reasons.push(`Reduce the quantities to ${LIMITS.copies} copies or fewer.`);
+  if (project.parts.some(part => !Number.isSafeInteger(part.quantity) || part.quantity < 0))
+    reasons.push('Set nonnegative safe-integer part quantities.');
   if (!Number.isFinite(width) || width <= 0 || width > LIMITS.extent)
     reasons.push('Set a strip width in the Sheets tab.');
   if (!Number.isFinite(gap) || gap < 0) reasons.push('Set a valid gap in the Machine tab.');
@@ -215,11 +215,10 @@ export function startBlockers(project: ProjectDocument): string[] {
     )
       reasons.push('Set a valid sheet length in the Sheets tab.');
     if (
-      !Number.isInteger(project.stock.quantity) ||
-      project.stock.quantity < 1 ||
-      project.stock.quantity > LIMITS.copies
+      !Number.isSafeInteger(project.stock.quantity) ||
+      project.stock.quantity < 1
     )
-      reasons.push('Set a sheet quantity from 1 to 500.');
+      reasons.push('Set a positive safe-integer sheet quantity.');
   }
   return reasons;
 }

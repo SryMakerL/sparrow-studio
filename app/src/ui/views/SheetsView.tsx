@@ -171,12 +171,11 @@ export function SheetsView() {
                     <input
                       type="number"
                       min={1}
-                      max={500}
                       step={1}
                       value={selected.quantity}
                       onChange={(event) => {
                         const quantity = Number(event.target.value);
-                        if (Number.isInteger(quantity) && quantity >= 1 && quantity <= 500)
+                        if (Number.isSafeInteger(quantity) && quantity >= 1)
                           updateSheet({ quantity });
                       }}
                     />

@@ -87,7 +87,7 @@ it('accepts stroke-only closed paths and explicitly rejects open paths',()=>{
 it.each(['<script/>','<foreignObject/>','<rect width="10" height="10" onload="alert(1)"/>','<use href="https://example.com/a.svg#b"/>','<use id="cycle" href="#cycle"/>'])('rejects unsafe or unsupported markup %s',body=>{
   expect(()=>importSVG(svg(body),'bad.svg',options)).toThrow();
 });
-it('rejects entities and limits subdivision without silently coarsening',()=>{
+it('rejects entities and preserves requested subdivision without silently coarsening',()=>{
   expect(()=>importSVG('<!DOCTYPE svg>'+svg('<rect width="1" height="1"/>'),'bad.svg',options)).toThrow('DOCTYPE');
-  expect(()=>importSVG(svg('<circle r="40"/>'),'huge.svg',{...options,tolerance:1e-12})).toThrow('5,000');
+  expect(importSVG(svg('<circle r="40"/>'),'huge.svg',{...options,tolerance:0.000005}).document.parts[0].outer.length).toBeGreaterThan(5000);
 });

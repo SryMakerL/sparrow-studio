@@ -9,14 +9,13 @@ export function normalizeSheetStock(stock: SheetStock): SheetStock {
     typeof stock.id !== 'string' ||
     !stock.id ||
     typeof stock.name !== 'string' ||
-    !Number.isInteger(stock.quantity) ||
+    !Number.isSafeInteger(stock.quantity) ||
     stock.quantity < 1 ||
-    stock.quantity > 500 ||
     !Number.isInteger(stock.priority) ||
     stock.priority < 0 ||
     stock.priority > 999
   )
-    throw Error('Invalid sheet identity, quantity (1–500), or priority (0–999).');
+    throw Error('Invalid sheet identity, positive safe-integer quantity, or priority (0–999).');
   if (stock.kind === 'rectangle') {
     if (
       ![stock.widthMm, stock.lengthMm].every(
@@ -47,14 +46,13 @@ export function normalizeSheetStock(stock: SheetStock): SheetStock {
   };
 }
 export function normalizeSheetStocks(stocks: SheetStock[], allowEmpty = false): SheetStock[] {
-  if (!Array.isArray(stocks) || (!allowEmpty && !stocks.length) || stocks.length > 500)
-    throw Error('Supply 1–500 sheet stock types.');
+  if (!Array.isArray(stocks) || (!allowEmpty && !stocks.length))
+    throw Error('Supply at least one sheet stock type.');
   const checked = stocks.map(normalizeSheetStock);
   if (
-    new Set(checked.map((s) => s.id)).size !== checked.length ||
-    checked.reduce((n, s) => n + s.quantity, 0) > 500
+    new Set(checked.map((s) => s.id)).size !== checked.length
   )
-    throw Error('Stock IDs must be unique and total inventory at most 500.');
+    throw Error('Stock IDs must be unique.');
   return checked;
 }
 export function jobStocks(job: Job): SheetStock[] {

@@ -5,11 +5,13 @@ import {test,expect} from '@playwright/test';
 test('quantity errors, independent SVG path review, and mobile diagnostics are accessible',async({page},info)=>{
   await page.goto('/');await workshop(page);
   const quantity=page.getByLabel('Quantity for Bracket');
-  await quantity.fill('501');
-  await expect(page.getByText('Enter a whole number from 0 to 500.')).toBeVisible();
+  await quantity.fill('-1');
+  await expect(page.getByText('Enter a nonnegative safe integer.')).toBeVisible();
   await expect(page.getByRole('button',{name:'Nest parts',exact:true})).toBeDisabled();
-  await quantity.fill('493');
-  await expect(page.getByText(/exceeds the 500-copy limit/)).toBeVisible();
+  await quantity.fill('501');
+  await expect(page.getByRole('button',{name:'Nest parts',exact:true})).toBeEnabled();
+  await quantity.fill('1.5');
+  await expect(page.getByText('Enter a nonnegative safe integer.')).toBeVisible();
   await quantity.fill('3');
   await expect(page.getByRole('button',{name:'Nest parts',exact:true})).toBeEnabled();
   await page.locator('input[type=file]').first().setInputFiles({name:'review.svg',mimeType:'image/svg+xml',buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60"><path d="M0 0H100V60H0Z"/><path d="M20 20H40V40H20Z"/></svg>')});

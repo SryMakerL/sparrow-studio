@@ -54,7 +54,7 @@ export function arrangePreparation(document:Document,pinnedIds:string[]=[],compa
     }
     for(const item of displaced) {
       const occupied=[...placements.values()],free=(b:Box)=>within(b)&&!occupied.some(other=>overlaps(b,other,gap*(1-1e-9)));
-      // ponytail: bounding-box separation reserves concave gaps; at 500 parts,
+      // ponytail: bounding-box separation reserves concave gaps;
       // edge candidates keep this deterministic without a second nesting engine.
       const candidates:Box[]=[];
       const x=Math.max(-LIMITS.extent,Math.min(LIMITS.extent-item.box.w,item.box.x));
@@ -81,12 +81,11 @@ export function arrangePreparation(document:Document,pinnedIds:string[]=[],compa
 }
 
 export function labelPoints(parts:Part[]):LabelPoint[] {
-  if(!Array.isArray(parts)||parts.length>500||new Set(parts.map(p=>p.id)).size!==parts.length)throw Error('Invalid label parts.');
+  if(!Array.isArray(parts)||new Set(parts.map(p=>p.id)).size!==parts.length)throw Error('Invalid label parts.');
   let vertices=0;
   return parts.map(source=>{
     // Quantity can be temporarily blank while editing; only geometry matters here.
     const part=normalizePart({...source,quantity:1}),rings=[part.outer,...part.holes],b=bounds(part.outer);
-    vertices+=rings.reduce((n,r)=>n+r.length,0);if(vertices>LIMITS.verticesTotal)throw Error('Label geometry exceeds 100,000 vertices.');
     const short=Math.min(b[2]-b[0],b[3]-b[1]),long=Math.max(b[2]-b[0],b[3]-b[1]);
     let point:Point,radius=0;
     if(long/short<=10000) {

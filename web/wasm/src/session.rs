@@ -96,12 +96,7 @@ impl SheetSession {
             || external.strip_height <= clearance
             || external.strip_height > 100_000.0
             || external.items.is_empty()
-            || external.items.len() > 500
-            || external
-                .items
-                .iter()
-                .any(|item| item.demand == 0 || item.demand > 500)
-            || external.items.iter().map(|item| item.demand).sum::<u64>() > 500
+            || external.items.iter().any(|item| item.demand == 0)
         {
             return Err("Invalid strip dimensions or catalog demand".into());
         }
@@ -134,8 +129,7 @@ impl SheetSession {
         }
         let request: Request = serde_json::from_str(input).map_err(|error| error.to_string())?;
         if request.quantities.len() != self.catalog.items.len()
-            || request.quantities.iter().any(|&qty| qty > 500)
-            || !(1..=500).contains(&request.quantities.iter().sum::<usize>())
+            || !request.quantities.iter().any(|&qty| qty > 0)
             || request
                 .budget_ms
                 .is_some_and(|budget| !budget.is_finite() || !(0.0..=600_000.0).contains(&budget))

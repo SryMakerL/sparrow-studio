@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { bounds } from '../../engine/geometry/normalize';
 import { netArea } from '../../engine/geometry/validate';
 import { colors, shades } from '../../engine/colors';
-import { LIMITS, type Part, type RotationRule } from '../../engine/model';
+import { type Part, type RotationRule } from '../../engine/model';
 import type { DisplayUnit } from '../../engine/units';
 import { arrangeParts } from '../../project/layout';
 import {
@@ -65,10 +65,10 @@ export function PartsView() {
     setMenu(undefined);
   };
   const setQuantity = (part: Part, quantity: number) => {
-    if (!Number.isInteger(quantity)) return;
+    if (!Number.isSafeInteger(quantity) || quantity < 0) return;
     updatePart(
       part.id,
-      { quantity: Math.max(0, Math.min(LIMITS.copies, quantity)) },
+      { quantity },
       `quantity:${part.id}`,
     );
   };
@@ -318,7 +318,6 @@ function PartProperties({
             className="mono quantity-input"
             type="number"
             min={0}
-            max={LIMITS.copies}
             aria-label={`Quantity of ${part.name}`}
             value={part.quantity}
             onChange={(event) => onQuantity(event.target.valueAsNumber)}

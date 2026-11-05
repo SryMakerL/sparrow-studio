@@ -91,9 +91,8 @@ pub fn run(input: &str, seconds: Option<u32>, seed: &str, clearance: f32, preset
     let external: ExtSPInstance = serde_json::from_str(input)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     if !external.strip_height.is_finite() || external.strip_height <= clearance || external.strip_height > 100_000.0
-        || external.items.is_empty() || external.items.len() > 500
-        || external.items.iter().any(|item| item.demand == 0 || item.demand > 500)
-        || external.items.iter().map(|item| item.demand).sum::<u64>() > 500 {
+        || external.items.is_empty()
+        || external.items.iter().any(|item| item.demand == 0) {
         return Err(JsValue::from_str("Invalid strip dimensions or demand"));
     }
     let constraints = stock::parse(input, external.strip_height).map_err(|e| JsValue::from_str(&e))?;

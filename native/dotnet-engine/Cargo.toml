@@ -1,0 +1,24 @@
+[package]
+name = "sparrow-dotnet-engine"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "sparrow_dotnet_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sparrow = { path = "../../vendor/sparrow" }
+jagua-rs = { version = "=0.8.3", features = ["spp"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+geo = { version = "=0.33.1", default-features = false, features = ["earcut"] }
+rand = "0.10"
+
+[patch.crates-io]
+jagua-rs = { path = "../../vendor/jagua-rs" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "unwind"

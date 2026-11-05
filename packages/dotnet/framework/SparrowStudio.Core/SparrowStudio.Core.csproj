@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>SparrowStudio.Core</AssemblyName>
+    <RootNamespace>SparrowStudio.Core</RootNamespace>
+    <Version>0.1.0</Version>
+    <PackageId>SparrowStudio.Core.Framework</PackageId>
+    <Description>Sparrow Studio app models and Windows x64 native solver for .NET Framework 4.7.2.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <NativeLibraryPath>$(MSBuildThisFileDirectory)..\..\..\..\native\dotnet-engine\target\release\sparrow_dotnet_native.dll</NativeLibraryPath>
+    <DistributionDirectory>$(MSBuildThisFileDirectory)..\dist\$(Configuration)\</DistributionDirectory>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="[13.0.1]" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <None Include="../README.md" Pack="true" PackagePath="/" />
+    <None Include="$(NativeLibraryPath)" Link="sparrow_dotnet_native.dll"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          Pack="true" PackagePath="runtimes/win-x64/native/" />
+  </ItemGroup>
+  <Target Name="RequireNativeLibrary" BeforeTargets="PrepareForBuild;Pack">
+    <Error Condition="!Exists('$(NativeLibraryPath)')"
+           Text="Missing native release DLL. Build native/dotnet-engine before building this project." />
+  </Target>
+  <Target Name="CreateReferenceDistribution" AfterTargets="Build">
+    <ItemGroup>
+      <ReferenceDistribution Include="$(TargetPath)" />
+      <ReferenceDistribution Include="$(TargetDir)Newtonsoft.Json.dll" />
+      <ReferenceDistribution Include="$(NativeLibraryPath)" />
+      <ReferenceDistribution Include="$(MSBuildThisFileDirectory)..\README.md" />
+    </ItemGroup>
+    <MakeDir Directories="$(DistributionDirectory)" />
+    <Copy SourceFiles="@(ReferenceDistribution)" DestinationFolder="$(DistributionDirectory)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

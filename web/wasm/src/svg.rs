@@ -23,15 +23,13 @@ fn resolve(text: &str) -> Result<Value, String> {
     };
     let tree = usvg::Tree::from_str(text, &options).map_err(|error| error.to_string())?;
     let mut paths = Vec::new();
-    let mut segments = 0;
-    collect(tree.root(), &mut paths, &mut segments)?;
+    collect(tree.root(), &mut paths)?;
     Ok(json!({"height": tree.size().height(), "paths": paths}))
 }
 
 fn collect(
     group: &usvg::Group,
     paths: &mut Vec<Value>,
-    segments: &mut usize,
 ) -> Result<(), String> {
     if group.opacity().get() == 0.0 {
         return Ok(());
@@ -41,7 +39,7 @@ fn collect(
     }
     for node in group.children() {
         match node {
-            usvg::Node::Group(group) => collect(group, paths, segments)?,
+            usvg::Node::Group(group) => collect(group, paths)?,
             usvg::Node::Path(path) => {
                 let filled = path.fill().is_some_and(|fill| fill.opacity().get() > 0.0);
                 let stroked = path
@@ -55,10 +53,6 @@ fn collect(
                 }
                 let mut commands = Vec::new();
                 for segment in path.data().segments() {
-                    *segments += 1;
-                    if *segments > 100_000 {
-                        return Err("SVG exceeds 100,000 path segments.".into());
-                    }
                     commands.push(match segment {
                         PathSegment::MoveTo(p) => json!(["M", p.x, p.y]),
                         PathSegment::LineTo(p) => json!(["L", p.x, p.y]),
@@ -78,4 +72,21 @@ fn collect(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_more_than_one_hundred_thousand_segments() {
+        let mut path = String::from("M0 0");
+        for i in 0..100_001 {
+            path.push_str(if i % 2 == 0 { "L1 0" } else { "L1 1" });
+        }
+        path.push('Z');
+        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><path d="{path}"/></svg>"#);
+        let value = resolve(&svg).unwrap();
+        assert!(value["paths"][0]["commands"].as_array().unwrap().len() > 100_000);
+    }
 }

@@ -179,12 +179,29 @@ fn expired_ids_are_never_recycled_and_unknown_initial_keeps_retain() {
 }
 
 #[test]
+fn catalog_and_requests_accept_more_than_five_hundred_parts() {
+    let items: Vec<_> = (0..501).map(|id| json!({
+        "id":id, "demand":if id == 0 { 501 } else { 1 },
+        "allowed_orientations":[0],
+        "shape":{"type":"rectangle","data":{"x_min":0,"y_min":0,"width":1,"height":1}}
+    })).collect();
+    let input = json!({"name":"large catalog","strip_height":100,"stock_length":100,"items":items});
+    let session = SheetSession::create(&input.to_string(), 0.0, "fast").unwrap();
+    assert_eq!(session.catalog.items.len(), 501);
+    assert_eq!(session.catalog.items[0].1, 501);
+    let mut quantities = vec![1; 501];
+    quantities[0] = 100_001;
+    let parsed = session.parse_request(&request(&quantities, None, None, "search")).unwrap();
+    assert_eq!(parsed.quantities, quantities);
+}
+
+#[test]
 fn request_and_constructor_boundaries_are_rejected() {
     let session = session();
     for input in [
         request(&[0, 0], None, None, "search"),
         request(&[1], None, None, "search"),
-        request(&[501, 0], None, None, "search"),
+        r#"{"quantities":[-1,0],"mode":"search","budget_ms":0}"#.into(),
         request(&[1, 0], None, None, "other"),
         r#"{"quantities":[1,0],"mode":"search","budget_ms":-1}"#.into(),
         r#"{"quantities":[1,0],"mode":"search","budget_ms":600001}"#.into(),

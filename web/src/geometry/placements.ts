@@ -6,8 +6,8 @@ export type CopyRef = { partId: string; copyIndex: number };
 
 export const placementKey = (ref: CopyRef): string => `${ref.partId}:${ref.copyIndex}`;
 
-const copyCount = (part: Part): number => Number.isInteger(part.quantity) && part.quantity >= 0
-  ? Math.min(500, part.quantity) : 1;
+const copyCount = (part: Part): number => Number.isSafeInteger(part.quantity) && part.quantity >= 0
+  ? part.quantity : 1;
 
 function fallbackPlacement(part: Part, copyIndex: number, count = copyCount(part), parent?: Placement): Placement {
   const b = bounds(part.outer) as [number, number, number, number];
@@ -150,7 +150,6 @@ export function duplicateCopies(document: Document, refs: CopyRef[]): Document {
     const [dx,dy]=preparationCopyOffset(1,2,bounds(part.outer) as [number,number,number,number]);
     return {...copy,copyIndex,xMm:copy.xMm+dx,yMm:copy.yMm+dy};
   });
-  if(placements.length+added.length>LIMITS.copies)throw Error('Project exceeds 500 copies.');
   return withDocumentPlacements({...document,parts:document.parts.map(part=>({...part,quantity:counts.get(part.id)!}))},[...placements,...added]);
 }
 

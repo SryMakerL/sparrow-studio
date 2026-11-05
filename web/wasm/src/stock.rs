@@ -44,8 +44,7 @@ pub(crate) fn apply(mut instance: SPInstance, constraints: Option<SPStockConstra
 impl StockGeometry {
     fn constraints(self, height: f32) -> Result<SPStockConstraints, String> {
         if !height.is_finite() || height <= 0.0 || height > 100_000.0
-            || self.holes.len() > 500
-            || self.outer.len() + self.holes.iter().map(Vec::len).sum::<usize>() > 10_000 {
+            || self.holes.len() > 500 {
             return Err("Invalid stock dimensions or geometry size".into());
         }
         let outer = ring(self.outer, height)?;
@@ -91,10 +90,10 @@ fn ring(mut points: Vec<[f32; 2]>, height: f32) -> Result<Polygon<f64>, String> 
     if points.len() > 1 && points.first() == points.last() {
         points.pop();
     }
-    if !(3..=4096).contains(&points.len()) || points.iter().any(|p|
+    if points.len() < 3 || points.iter().any(|p|
         !p[0].is_finite() || !p[1].is_finite()
             || p[0] < 0.0 || p[0] > 100_000.0 || p[1] < 0.0 || p[1] > height) {
-        return Err("Stock rings require 3..4096 finite vertices within material bounds".into());
+        return Err("Stock rings require at least 3 finite vertices within material bounds".into());
     }
     let polygon = Polygon::new(LineString::from(points.into_iter()
         .map(|p| (f64::from(p[0]), f64::from(p[1]))).collect::<Vec<_>>()), vec![]);
@@ -103,6 +102,27 @@ fn ring(mut points: Vec<[f32; 2]>, height: f32) -> Result<Polygon<f64>, String> 
         return Err("Stock rings must be simple nondegenerate polygons".into());
     }
     Ok(polygon)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_stock_outlines_above_previous_vertex_caps() {
+        let points: Vec<_> = (0..4).flat_map(|edge| (0..2501).map(move |i| {
+            let t = i as f32 * 100.0 / 2501.0;
+            match edge {
+                0 => [t, 0.0],
+                1 => [100.0, t],
+                2 => [100.0 - t, 100.0],
+                _ => [0.0, 100.0 - t],
+            }
+        })).collect();
+        let stock = StockGeometry { outer: points, holes: vec![] };
+        stock.constraints(100.0).unwrap();
+        assert!(ring(vec![[0.0, 0.0], [100_001.0, 0.0], [0.0, 1.0]], 100.0).is_err());
+    }
 }
 
 fn original(ring: &LineString<f64>) -> Result<OriginalShape, String> {

@@ -30,7 +30,7 @@ export function ringCrosses(a: Ring, b: Ring) {
   return a.some((p,i) => b.some((q,j) => intersects(p,a[(i+1)%a.length],q,b[(j+1)%b.length])));
 }
 export function normalizeRing(value: unknown): Ring {
-  if (!Array.isArray(value) || value.length > LIMITS.verticesPerPart + 1) throw Error('Contour exceeds 5,000 vertices or is not an array.');
+  if (!Array.isArray(value)) throw Error('Contour must be an array.');
   const ring: Ring = [];
   for (const p of value) {
     if (!Array.isArray(p) || p.length !== 2 || !p.every(v => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= LIMITS.extent)) throw Error('Coordinates must be finite and within 100,000 mm.');
@@ -42,7 +42,7 @@ export function normalizeRing(value: unknown): Ring {
     const a=ring[(i+ring.length-1)%ring.length],b=ring[i],c=ring[(i+1)%ring.length];
     if(orient(a,b,c)===0 && (b[0]-a[0])*(c[0]-b[0])+(b[1]-a[1])*(c[1]-b[1])<0) throw Error('Contour doubles back along an adjacent edge.');
   }
-  // ponytail: O(n²) validation is bounded at 5,000 vertices and runs in a worker;
+  // Pairwise contour validation runs in a worker.
   // replace with a sweep line if measured import latency requires it.
   for (let i=0;i<ring.length;i++) for (let j=i+1;j<ring.length;j++) {
     if (j === i+1 || (i === 0 && j === ring.length-1)) continue;
@@ -52,14 +52,13 @@ export function normalizeRing(value: unknown): Ring {
 }
 export function normalizePart(part: Part): Part {
   if (typeof part.id !== 'string' || !part.id || typeof part.name !== 'string' || !part.source || !['svg','dxf','sparrow','drawn'].includes(part.source.format)) throw Error('Invalid part identity or provenance.');
-  if (!Number.isInteger(part.quantity) || part.quantity < 0 || part.quantity > LIMITS.copies) throw Error('Quantity must be a whole number from 0 to 500.');
+  if (!Number.isSafeInteger(part.quantity) || part.quantity < 0) throw Error('Quantity must be a nonnegative safe integer.');
   if (!Number.isFinite(part.approximationToleranceMm) || part.approximationToleranceMm < 0 || part.approximationToleranceMm > 100) throw Error('Invalid approximation tolerance.');
   if (!Array.isArray(part.preparationPosition) || part.preparationPosition.length !== 2 || !part.preparationPosition.every(Number.isFinite)) throw Error('Invalid preparation position.');
   if (!part.rotations || (part.rotations.kind !== 'continuous' && (part.rotations.kind !== 'discrete' || !Array.isArray(part.rotations.degrees) || !part.rotations.degrees.length || !part.rotations.degrees.every(Number.isFinite)))) throw Error('Discrete rotations require a nonempty list of finite degrees.');
   const outer = normalizeRing(part.outer);
   if (!Array.isArray(part.holes)) throw Error('Holes must be an array.');
   const holes = part.holes.map(normalizeRing);
-  if (outer.length + holes.reduce((n,h) => n+h.length,0) > LIMITS.verticesPerPart) throw Error('Part exceeds 5,000 vertices including holes.');
   for (let i=0;i<holes.length;i++) {
     if (!inside(holes[i][0],outer) || ringCrosses(outer,holes[i])) throw Error('Hole must be strictly inside its outer contour.');
     for(let j=0;j<i;j++) if (ringCrosses(holes[i],holes[j]) || inside(holes[i][0],holes[j]) || inside(holes[j][0],holes[i])) throw Error('Holes overlap or contain each other.');
@@ -72,13 +71,12 @@ export function scalePart(part:Part,factor:number):Part {
   return normalizePart({...part,outer:scale(part.outer),holes:part.holes.map(scale),approximationToleranceMm:part.approximationToleranceMm*factor});
 }
 export function normalizeDocument(doc: Document, allowEmpty=false): Document {
-  if (typeof doc.name !== 'string' || !doc.name.trim() || !Array.isArray(doc.parts) || (!allowEmpty&&!doc.parts.length) || doc.parts.length > 500) throw Error('Project needs 1–500 part types.');
+  if (typeof doc.name !== 'string' || !doc.name.trim() || !Array.isArray(doc.parts) || (!allowEmpty&&!doc.parts.length)) throw Error('Project needs at least one part type.');
   const s = doc.settings;
   if (!s || !Number.isFinite(s.materialWidthMm) || s.materialWidthMm <= 0 || s.materialWidthMm > LIMITS.extent || !Number.isFinite(s.clearanceMm) || s.clearanceMm < 0 || s.clearanceMm >= s.materialWidthMm || (s.timeLimitSeconds!==null && ![10,30,60,120,300,600].includes(s.timeLimitSeconds))) throw Error('Invalid material width, clearance, or run duration.');
   if(s.solverPreset!==undefined&&!['standard','fast'].includes(s.solverPreset))throw Error('Invalid solver preset.');
   const parts = doc.parts.map(normalizePart);
   if (new Set(parts.map(p=>p.id)).size !== parts.length) throw Error('Part IDs must be unique.');
-  if (parts.reduce((n,p)=>n+p.quantity,0) > LIMITS.copies || parts.reduce((n,p)=>n+p.quantity*(p.outer.length+p.holes.reduce((m,h)=>m+h.length,0)),0) > LIMITS.verticesTotal) throw Error('Project exceeds 500 copies or 100,000 demanded vertices.');
   if (doc.placements !== undefined) {
     if (!Array.isArray(doc.placements)) throw Error('Placements must be an array.');
     const ids = new Set(parts.map(p=>p.id)), seen = new Set<string>();

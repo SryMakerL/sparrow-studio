@@ -15,6 +15,10 @@ Arrange parts to use less material when laser cutting, CNC routing, or cutting f
 
 Both apps share the solver bridge in `web/wasm`, the bundled examples and the third-party notices in `web/public`.
 
+## C# / .NET native library
+
+`packages/dotnet` provides `SparrowStudio.Core` for .NET 8+ Windows x64 desktop and server applications, using the app's JSON models and the Rust solver through a native DLL. It does not require Node or a browser. This initial binding supports strip/single-sheet solving, not the complete app's multi-sheet scheduling, import/export or independent geometry validation. See the [C# integration guide](packages/dotnet/README.md) and [console example](examples/dotnet-console/Program.cs).
+
 ## Your files stay on your device
 
 Import, editing, geometry checks and nesting all run locally. No drawings are uploaded. The public site uses Cloudflare Web Analytics for traffic and performance, without sending project names, geometry or file contents.

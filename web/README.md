@@ -65,7 +65,7 @@ DXF uses pinned `dxf` 5.3.1 for parsing and spline evaluation. It supports plana
 
 Holes remain in geometry and exports, but the solver reserves each entire outer footprint. Other parts cannot nest inside holes. Clearance is part-to-part distance; the solver also reserves an edge allowance, disclosed in settings. Original curves are exported as the same polygonal approximation used for validation. This is not a toolpath generator or manufacturing certification.
 
-Limits are 10 MiB/file, 25 MiB/import batch, 500 demanded copies, 5,000 vertices/part including holes, 100,000 demanded vertices and coordinate extents of 100,000 mm. Validation uses 1e-6 mm linear tolerance and 1e-8 mm² overlap tolerance per pair. A failed check never silently loosens either tolerance.
+Resource safeguards include 10 MiB/file, 25 MiB/import batch, 10,000 DXF expanded entities or SVG paths, coordinate extents of 100,000 mm, subdivision depth and the 50-million-operation clearance budget. Part types, copy quantities and vertex counts have no fixed size cap; quantities must be nonnegative safe integers. Validation uses 1e-6 mm linear tolerance and 1e-8 mm² overlap tolerance per pair. A failed check never silently loosens either tolerance.
 
 ## Verification
 

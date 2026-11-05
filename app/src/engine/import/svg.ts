@@ -93,12 +93,10 @@ export function importSVG(text:string,fileName:string,options:SVGOptions):Import
   try {resolved=JSON.parse(svg_paths(new XMLSerializer().serializeToString(document)));}
   catch(error){throw Error(`SVG could not be resolved: ${String(error)}`);}
   const matrix:Matrix=[scale,0,0,-scale,0,resolved.height*scale];
-  const entities:Contour[][]=[];let totalVertices=0;
+  const entities:Contour[][]=[];
   for(const [i,path] of resolved.paths.entries()) {
     const id=path.id||`path ${i+1}`;
     const contours=pathContours(path.commands,multiply(matrix,path.transform),options.tolerance,id);
-    totalVertices+=contours.reduce((n,c)=>n+c.ring.length,0);
-    if(totalVertices>100_000)throw Error('SVG exceeds 100,000 vertices.');
     entities.push(compound(contours,path.rule));
   }
   warnings.push('Closed contour interpretation: closed stroke-only outlines count; stroke thickness is not part size or kerf.');

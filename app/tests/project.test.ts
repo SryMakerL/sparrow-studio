@@ -31,6 +31,24 @@ const square = (size: number, quantity = 1): Part => ({
 });
 
 describe('project document', () => {
+  it('accepts large part and stock quantities but rejects invalid integers', () => {
+    for (const parts of [[square(10, 501)], [square(10, 25001)], Array.from({ length: 501 }, () => square(1))]) {
+      const project = addParts(newProject('Large job'), parts);
+      expect(startBlockers(project)).toEqual([]);
+      expect(parseProject(JSON.parse(serializeProject(project))).parts).toHaveLength(parts.length);
+      expect(normalizeJob(projectJob(project)).parts).toHaveLength(parts.length);
+    }
+    const project = addParts(newProject('Large inventory'), [square(10)]);
+    const sheetProject = { ...project, stock: { packing: 'sheets' as const, strip: project.stock.strip, lengthMm: 1000, quantity: 501 } };
+    expect(startBlockers(sheetProject)).toEqual([]);
+    expect(parseProject(JSON.parse(serializeProject(sheetProject))).stock).toMatchObject({ quantity: 501 });
+    for (const quantity of [-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      const invalid = { ...project, parts: [{ ...project.parts[0], quantity }] };
+      expect(startBlockers(invalid).length).toBeGreaterThan(0);
+      expect(() => parseProject(invalid)).toThrow();
+    }
+  });
+
   it('numbers imported part types across batches without changing existing parts or sources', () => {
     const first = nameImportedParts([], [square(10, 40), square(20)]);
     expect(first.map((part) => part.name)).toEqual(['001', '002']);

@@ -8,7 +8,6 @@ export const multiply=(a:Matrix,b:Matrix):Matrix=>[
   a[0]*b[0]+a[2]*b[1],a[1]*b[0]+a[3]*b[1],a[0]*b[2]+a[2]*b[3],a[1]*b[2]+a[3]*b[3],
   a[0]*b[4]+a[2]*b[5]+a[4],a[1]*b[4]+a[3]*b[5]+a[5]];
 export function append(ring:Ring,p:Point) {
-  if(ring.length>=5001) throw Error('Curve approximation exceeds 5,000 vertices. Choose a coarser tolerance and preview again.');
   if(!p.every(Number.isFinite)) throw Error('Curve produced non-finite coordinates.');
   ring.push(p);
 }
@@ -25,6 +24,6 @@ export function ellipse(center:Point,u:Point,v:Point,start:number,sweep:number,t
   // Linear interpolation error is bounded by M*dt²/8 after affine scaling.
   const curvatureBound=Math.hypot(...u,...v);
   const segments=Math.max(1,Math.ceil(Math.abs(sweep)*Math.sqrt(curvatureBound/(8*tolerance))));
-  if(!Number.isFinite(segments)||output.length+segments>5001) throw Error('Arc approximation exceeds 5,000 vertices. Choose a coarser tolerance and preview again.');
+  if(!Number.isSafeInteger(segments)) throw Error('Arc approximation requires a finite safe segment count.');
   for(let i=1;i<=segments;i++) {const t=start+sweep*i/segments;append(output,[center[0]+u[0]*Math.cos(t)+v[0]*Math.sin(t),center[1]+u[1]*Math.cos(t)+v[1]*Math.sin(t)]);}
 }

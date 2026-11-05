@@ -325,12 +325,12 @@ describe('mixed inventory', () => {
     expect(stock.lengthMm).toBe(30);
     expect(stock.widthMm).toBe(30);
     expect(stockArea(stock)).toBe(500);
-    expect(() =>
+    expect(
       normalizeSheetStocks([
         { ...stock, quantity: 500 },
         { ...stock, id: 'other' },
       ]),
-    ).toThrow();
+    ).toHaveLength(2);
     expect(() => normalizeSheetStock({ ...stock, priority: 0.5 })).toThrow();
     expect(() => normalizeSheetStock({ ...stock, quantity: 0 })).toThrow();
   });
