@@ -1,3 +1,4 @@
+import { MAX_SHEET_CONCURRENCY, MAX_SOLVER_THREADS } from '../cpuBudget';
 import { normalizeSheetStock, normalizeSheetStocks } from '../stock';
 import { orient2d } from 'robust-predicates';
 import { LIMITS, type Job, type Point, type Ring, type Part } from '../model';
@@ -216,6 +217,16 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
     sheetInsertionFailures > 100
   )
     throw Error('Sheet insertion failures must be a whole number from 1 to 100.');
+  const solverThreads = s.solverThreads === undefined ? 0 : s.solverThreads;
+  if (!Number.isInteger(solverThreads) || solverThreads < 0 || solverThreads > MAX_SOLVER_THREADS)
+    throw Error(`Solver threads must be a whole number from 0 to ${MAX_SOLVER_THREADS}.`);
+  const sheetConcurrency = s.sheetConcurrency === undefined ? 3 : s.sheetConcurrency;
+  if (
+    !Number.isInteger(sheetConcurrency) ||
+    sheetConcurrency < 1 ||
+    sheetConcurrency > MAX_SHEET_CONCURRENCY
+  )
+    throw Error(`Sheet concurrency must be a whole number from 1 to ${MAX_SHEET_CONCURRENCY}.`);
   const parts = doc.parts.map(normalizePart);
   if (new Set(parts.map((p) => p.id)).size !== parts.length)
     throw Error('Part IDs must be unique.');
@@ -236,7 +247,15 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
     throw Error('Sheet snapshot dimensions differ from job.');
   return {
     ...doc,
-    settings: { ...s, sheetStocks, sheetStock, sheetCompressionSeconds, sheetInsertionFailures },
+    settings: {
+      ...s,
+      sheetStocks,
+      sheetStock,
+      sheetCompressionSeconds,
+      sheetInsertionFailures,
+      solverThreads,
+      sheetConcurrency,
+    },
     parts,
   };
 }

@@ -150,8 +150,8 @@ fn solver_config(preset: &str, workers: usize, seconds: Option<u32>) -> Result<S
         },
         _ => return Err("Invalid solver preset"),
     }
-    config.expl_cfg.separator_config.n_workers = config.expl_cfg.separator_config.n_workers.min(workers);
-    config.cmpr_cfg.separator_config.n_workers = config.cmpr_cfg.separator_config.n_workers.min(workers);
+    config.expl_cfg.separator_config.n_workers = workers.max(1);
+    config.cmpr_cfg.separator_config.n_workers = workers.max(1);
     if let Some(seconds) = seconds {
         config.expl_cfg.time_limit = Duration::from_secs_f64(seconds as f64 * 0.8);
         config.cmpr_cfg.time_limit = Duration::from_secs_f64(seconds as f64 * 0.2);

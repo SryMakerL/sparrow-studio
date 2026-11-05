@@ -1,3 +1,4 @@
+import { optimizeParallelSheets } from './parallelSheets';
 import { jobStocks, stockArea, stockGeometryKey } from './stock';
 import { SOLVER_REVISION, POLICY, type Job, type Result, type Validation } from './model';
 import { normalizeJob, area as ringArea } from './geometry/normalize';
@@ -23,6 +24,7 @@ export type StripAttempt = ((
   beginSheet?: (catalog: Job, signal?: AbortSignal) => void | Promise<void>;
   endSheet?: () => void;
   acceptCandidate?: (result: Result) => void;
+  forkSheet?: () => StripAttempt;
   continueSheet?: StripAttempt;
 };
 
@@ -172,6 +174,7 @@ export async function solveSheets(
             beginSheet: solve.beginSheet,
             endSheet: solve.endSheet,
             acceptCandidate: solve.acceptCandidate,
+            forkSheet: solve.forkSheet,
             continueSheet: solve.continueSheet,
           },
         ),
@@ -251,6 +254,7 @@ async function solveSheetRound(
   let stock = stocks[0];
   let length = stock.lengthMm;
   const count = stocks.length;
+  const parallel = count > 1 && !!solve.forkSheet;
   const compressionMs = (job.settings.sheetCompressionSeconds ?? 10) * 1000;
   const insertionFailureLimit = job.settings.sheetInsertionFailures ?? 3;
   const started = performance.now(),
@@ -494,7 +498,7 @@ async function solveSheetRound(
         await attempt([...selected], 'compress', best.result);
         if (stopped()) break;
         if (selected.length === pool.length) {
-          if (sheets.length > 0) break;
+          if (sheets.length > 0 || parallel) break;
           await untilAbort(
             new Promise<void>((resolve) =>
               setTimeout(
@@ -563,7 +567,7 @@ async function solveSheetRound(
         insertionFailures = selected.length > beforeInsertion ? 0 : insertionFailures + 1;
         if (insertionFailures >= insertionFailureLimit) break;
       }
-      if (!best) break;
+      if (!best || parallel) break;
       await untilAbort(new Promise<void>((resolve) => setTimeout(resolve, 0)), signal);
     }
     solve.endSheet?.();
@@ -578,7 +582,19 @@ async function solveSheetRound(
       publishCurrent(snapshot);
     }
   }
-  const result = aggregate();
+  let result = aggregate();
+  if (parallel && result.sheets!.length && !stopped()) {
+    result = await optimizeParallelSheets(job, result, solve.forkSheet!, {
+      signal,
+      deadline: options.deadline ?? Infinity,
+      validate: options.validate,
+      onProgress: options.onProgress,
+      onResult: (next) => {
+        options.onSheet?.(structuredClone(next));
+        options.onCurrentRound?.(structuredClone(next), options.roundIndex ?? 0);
+      },
+    });
+  }
   return {
     result,
     reason: options.signal?.aborted

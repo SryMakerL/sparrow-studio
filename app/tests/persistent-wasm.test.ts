@@ -26,6 +26,7 @@ type Request = {
   mode: 'search' | 'compress';
   budget_ms: number;
   initial_snapshot?: number;
+  initial_placement?: { used_length_mm: number; placements: { item_id: number; rotation: number; translation: [number, number] }[] };
   retain_snapshot?: number;
 };
 type Session = { step(request: string, seed: string, callback: (text: string) => void): void };
@@ -106,6 +107,14 @@ it.each(['pkg', 'pkg-nosimd'])('preserves catalog IDs, snapshots and retained fa
     for (const candidate of candidates(compressedMessages))
       expect(candidate.solution.strip_width).toBeLessThanOrEqual(cold.solution.strip_width);
     const compressed = best(compressedMessages);
+    // Resume from the older accepted geometry, not necessarily the newest published ID.
+    const resumed = run({ quantities: [1, 0], initial_snapshot: cold.snapshotId,
+      retain_snapshot: compressed.snapshotId, mode: 'compress', budget_ms: 20 });
+    expect(resumed.filter(message => (message as { phase?: string }).phase === 'Compression')).toHaveLength(1);
+    expect(candidates(resumed).filter(message => (message as Candidate & { report?: string }).report === 'ExplFeas')).toHaveLength(1);
+    const zero = run({ quantities: [1, 0], initial_snapshot: compressed.snapshotId,
+      retain_snapshot: compressed.snapshotId, mode: 'compress', budget_ms: 0 });
+    expect(candidates(zero)).toHaveLength(1);
     const inserted = best(run({ quantities: [2, 1], initial_snapshot: compressed.snapshotId, retain_snapshot: compressed.snapshotId, mode: 'search', budget_ms: 0 }));
     for (const item of compressed.solution.layout.placed_items)
       expect(inserted.solution.layout.placed_items).toContainEqual(item);
@@ -119,6 +128,28 @@ it.each(['pkg', 'pkg-nosimd'])('preserves catalog IDs, snapshots and retained fa
     run({ quantities: [1, 0], initial_snapshot: restored.snapshotId, retain_snapshot: restored.snapshotId, mode: 'search', budget_ms: 0 });
     expect(() => step(session, { quantities: [1, 0], initial_snapshot: cold.snapshotId, retain_snapshot: restored.snapshotId, mode: 'search', budget_ms: 0 })).toThrow(/expired/);
     run({ quantities: [1, 0], initial_snapshot: restored.snapshotId, mode: 'search', budget_ms: 0 });
+    const external = (candidate: Candidate) => ({
+      used_length_mm: candidate.solution.strip_width,
+      placements: candidate.solution.layout.placed_items.map(item => ({ item_id: item.item_id,
+        rotation: item.transformation.rotation, translation: item.transformation.translation })),
+    });
+    const restarted = new wasm.SheetSession(solverInput(job), 1, 'fast');
+    try {
+      const appended = best(step(restarted, { quantities: [2, 1], initial_placement: external(compressed), mode: 'search', budget_ms: 0 }));
+      check(job, [2, 1], [appended]);
+      for (const item of compressed.solution.layout.placed_items)
+        expect(appended.solution.layout.placed_items).toContainEqual(item);
+      const subset = external(appended);
+      subset.placements.splice(subset.placements.findIndex(item => item.item_id === 0), 1);
+      const deleted = best(step(restarted, { quantities: [1, 1], initial_placement: subset, mode: 'search', budget_ms: 0 }));
+      check(job, [1, 1], [deleted]);
+      expect(external(deleted).placements).toEqual(subset.placements);
+      expect(() => step(restarted, { quantities: [0, 1], initial_placement: {
+        ...subset, placements: [{ item_id: 1, rotation: 0, translation: [-100, -100] }],
+      }, mode: 'search', budget_ms: 0 })).toThrow(/Initial placement/);
+    } finally {
+      restarted.free();
+    }
   } finally {
     session.free();
   }

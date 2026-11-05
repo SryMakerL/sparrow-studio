@@ -42,7 +42,11 @@ export function useSheetSolver() {
     setState('Running');
     const controller = new AbortController();
     active.current = controller;
-    void solveSheets(doc, sheetStripSolver(revision, threads), {
+    const run = {
+      ...doc,
+      settings: { ...doc.settings, solverThreads: threads ?? doc.settings.solverThreads ?? 0 },
+    };
+    void solveSheets(run, sheetStripSolver(revision, run.settings.solverThreads), {
       revision,
       signal: controller.signal,
       normalize: async (document, signal) => {
@@ -85,6 +89,7 @@ export function useSheetSolver() {
       .then((outcome) => {
         if (active.current !== controller) return;
         setResult(outcome.result);
+        setCurrentResult(outcome.result);
         setElapsed(outcome.result.elapsedSeconds);
         setState(outcome.reason === 'Stopped' ? 'Stopped' : 'Complete');
         diagnostics.current = {

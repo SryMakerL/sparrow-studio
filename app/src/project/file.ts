@@ -1,3 +1,4 @@
+import { MAX_SHEET_CONCURRENCY, MAX_SOLVER_THREADS } from '../engine/cpuBudget';
 import { normalizeSheetStocks } from '../engine/stock';
 import type { SheetStock } from '../engine/model';
 import { validate } from '../engine/geometry/validate';
@@ -62,7 +63,9 @@ export function parseProject(value: unknown): ProjectDocument {
     settings.solveWith !== 'local' ||
     !TIME_LIMITS.includes(settings.timeLimitSeconds as never) ||
     !['standard', 'fast'].includes(settings.preset as string) ||
-    ![0, 1, 2, 3].includes(settings.threads as number)
+    !Number.isInteger(settings.threads) ||
+    (settings.threads as number) < 0 ||
+    (settings.threads as number) > MAX_SOLVER_THREADS
   )
     return fail('invalid solver settings.');
   const sheetCompressionSeconds =
@@ -81,6 +84,13 @@ export function parseProject(value: unknown): ProjectDocument {
     (sheetInsertionFailures as number) > 100
   )
     return fail('invalid sheet insertion failures.');
+  const sheetConcurrency = settings.sheetConcurrency === undefined ? 3 : settings.sheetConcurrency;
+  if (
+    !Number.isInteger(sheetConcurrency) ||
+    (sheetConcurrency as number) < 1 ||
+    (sheetConcurrency as number) > MAX_SHEET_CONCURRENCY
+  )
+    return fail('invalid sheet concurrency.');
   if (!Array.isArray(value.solutions)) return fail('solutions must be a list.');
   const defaults = value.partDefaults;
   const rule = isRecord(defaults) ? defaults.rotations : undefined;
@@ -126,6 +136,7 @@ export function parseProject(value: unknown): ProjectDocument {
       ...project.settings,
       sheetCompressionSeconds: sheetCompressionSeconds as number,
       sheetInsertionFailures: sheetInsertionFailures as number,
+      sheetConcurrency: sheetConcurrency as number,
     },
     parts,
   };

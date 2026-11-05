@@ -1,3 +1,4 @@
+import { MAX_SHEET_CONCURRENCY, MAX_SOLVER_THREADS } from '../engine/cpuBudget';
 import { normalizeSheetStocks, stockArea, stockGeometryKey, usedStockArea } from '../engine/stock';
 import type { SheetStock } from '../engine/model';
 import {
@@ -53,13 +54,14 @@ export function setStockSheets(stock: Stock, sheets: SheetStock[]): Stock {
 export type MachinePreset = { id: string; name: string; gapMm: number };
 /** Local solving only, for now. */
 export type SolveWith = 'local';
-/** 0 lets the solver choose. */
-export type Threads = 0 | 1 | 2 | 3;
+/** An integer from 0 to 64; 0 lets the solver choose. */
+export type Threads = number;
 export type SolverSettings = {
   solveWith: SolveWith;
   timeLimitSeconds: TimeLimit;
   sheetCompressionSeconds: number;
   sheetInsertionFailures: number;
+  sheetConcurrency: number;
   preset: Preset;
   threads: Threads;
 };
@@ -96,6 +98,7 @@ export const DEFAULT_SOLVER_SETTINGS: SolverSettings = {
   timeLimitSeconds: null,
   sheetCompressionSeconds: 10,
   sheetInsertionFailures: 3,
+  sheetConcurrency: 3,
   preset: 'standard',
   threads: 0,
 };
@@ -133,11 +136,13 @@ export function projectJob(project: ProjectDocument): Job {
     parts: resolvedParts(project),
     settings: {
       solverPreset: project.settings.preset,
+      solverThreads: project.settings.threads,
       materialWidthMm: project.stock.strip.widthMm,
       clearanceMm: activeMachine(project).gapMm,
       timeLimitSeconds: project.settings.timeLimitSeconds,
       sheetCompressionSeconds: project.settings.sheetCompressionSeconds,
       sheetInsertionFailures: project.settings.sheetInsertionFailures,
+      sheetConcurrency: project.settings.sheetConcurrency,
       ...(project.stock.packing === 'sheets'
         ? {
             sheetLengthMm: project.stock.lengthMm,
@@ -201,6 +206,18 @@ export function startBlockers(project: ProjectDocument): string[] {
     project.settings.sheetInsertionFailures > 100
   )
     reasons.push('Set consecutive sheet insertion failures from 1 to 100 in Settings.');
+  if (
+    !Number.isInteger(project.settings.sheetConcurrency) ||
+    project.settings.sheetConcurrency < 1 ||
+    project.settings.sheetConcurrency > MAX_SHEET_CONCURRENCY
+  )
+    reasons.push(`Set concurrent sheets from 1 to ${MAX_SHEET_CONCURRENCY} in Settings.`);
+  if (
+    !Number.isInteger(project.settings.threads) ||
+    project.settings.threads < 0 ||
+    project.settings.threads > MAX_SOLVER_THREADS
+  )
+    reasons.push(`Set solver threads from 0 to ${MAX_SOLVER_THREADS} in Settings.`);
   if (project.stock.packing === 'sheets') {
     if (project.stock.sheets !== undefined)
       try {

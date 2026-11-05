@@ -27,6 +27,7 @@ self.onmessage = async ({ data }: MessageEvent<Start | SessionInit | SessionStep
       activeAttempt = data.attemptId;
       session.step(JSON.stringify({
         quantities: data.quantities, initial_snapshot: data.initialSnapshot,
+        initial_placement: data.initialPlacement,
         retain_snapshot: data.retainSnapshot, mode: data.mode, budget_ms: data.budgetMs,
       }), data.seed, (json: string) => {
         const message = JSON.parse(json) as SolverMessage;

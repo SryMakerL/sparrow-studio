@@ -87,6 +87,7 @@ describe('project document', () => {
   it.each([
     ['sheetCompressionSeconds', 1, 600],
     ['sheetInsertionFailures', 1, 100],
+    ['sheetConcurrency', 1, 64],
   ] as const)('validates %s in files, solver jobs and start blockers', (field, min, max) => {
     const project = addParts(newProject('Job'), [square(10)]);
     for (const value of [min, max]) {
@@ -106,6 +107,47 @@ describe('project document', () => {
     }
   });
 
+  it('persists thread preferences from 0 to 64 without applying this machine’s limits', () => {
+    const project = addParts(newProject('Job'), [square(10)]);
+    for (const threads of [0, 1, 2, 3, 4, 6, 32, 64]) {
+      project.settings.threads = threads;
+      const parsed = parseProject(JSON.parse(serializeProject(project)));
+      expect(parsed.settings.threads).toBe(threads);
+      expect(projectJob(parsed).settings.solverThreads).toBe(threads);
+      expect(normalizeJob(projectJob(parsed)).settings.solverThreads).toBe(threads);
+      expect(startBlockers(parsed)).toEqual([]);
+    }
+  });
+
+  it.each([-1, 65, 1.5, NaN, Infinity, null, '3', undefined])(
+    'rejects invalid solver threads: %s',
+    (threads) => {
+      const project = addParts(newProject('Job'), [square(10)]);
+      const changed = { ...project, settings: { ...project.settings, threads } };
+      expect(() => parseProject(changed)).toThrow('invalid solver settings');
+      expect(startBlockers(changed as typeof project)).toEqual([
+        'Set solver threads from 0 to 64 in Settings.',
+      ]);
+    },
+  );
+
+  it('defaults missing solver threads to automatic for legacy jobs', () => {
+    const job = projectJob(addParts(newProject('Job'), [square(10)]));
+    delete job.settings.solverThreads;
+    expect(normalizeJob(job).settings.solverThreads).toBe(0);
+  });
+
+  it.each([-1, 65, 1.5, NaN, Infinity, null, '3'])(
+    'rejects invalid solver job threads: %s',
+    (solverThreads) => {
+      const job = projectJob(addParts(newProject('Job'), [square(10)]));
+      const changed = { ...job, settings: { ...job.settings, solverThreads } };
+      expect(() => normalizeJob(changed as typeof job)).toThrow(
+        'Solver threads must be a whole number from 0 to 64.',
+      );
+    },
+  );
+
   it('round-trips non-default sheet controls and passes both to the solver', () => {
     const project = addParts(newProject('Job'), [square(10)]);
     project.settings.sheetCompressionSeconds = 24;
@@ -116,6 +158,20 @@ describe('project document', () => {
       sheetCompressionSeconds: 24,
       sheetInsertionFailures: 7,
     });
+  });
+
+  it('defaults legacy concurrency and persists the configured board limit', () => {
+    const project = addParts(newProject('Job'), [square(10)]);
+    const legacy = JSON.parse(serializeProject(project));
+    delete legacy.settings.sheetConcurrency;
+    expect(parseProject(legacy).settings.sheetConcurrency).toBe(3);
+    const job = projectJob(project);
+    delete job.settings.sheetConcurrency;
+    expect(normalizeJob(job).settings.sheetConcurrency).toBe(3);
+    project.settings.sheetConcurrency = 6;
+    const parsed = parseProject(JSON.parse(serializeProject(project)));
+    expect(projectJob(parsed).settings.sheetConcurrency).toBe(6);
+    expect(jobKey(projectJob(parsed))).toBe(jobKey(job));
   });
 
   it('rejects other formats and versions', () => {

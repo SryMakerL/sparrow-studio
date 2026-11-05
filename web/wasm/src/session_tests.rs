@@ -25,6 +25,88 @@ fn step(session: &mut SheetSession, input: &str) -> Result<Vec<Value>, String> {
     Ok(messages)
 }
 
+fn external(candidate: &Value) -> Value {
+    json!({"used_length_mm":candidate["solution"]["strip_width"],
+        "placements":candidate["solution"]["layout"]["placed_items"].as_array().unwrap().iter().map(|item| json!({
+            "item_id":item["item_id"], "rotation":item["transformation"]["rotation"],
+            "translation":item["transformation"]["translation"]
+        })).collect::<Vec<_>>()})
+}
+
+#[test]
+fn external_layout_recovers_after_compression_and_expiry_then_restores_deleted_subset() {
+    let mut original_session = session();
+    let first = candidate(
+        &step(
+            &mut original_session,
+            &request(&[1, 0], None, None, "search"),
+        )
+        .unwrap(),
+    );
+    let compressed = step(
+        &mut original_session,
+        &request(&[1, 0], Some(first), None, "compress"),
+    )
+    .unwrap();
+    let layout = external(
+        compressed
+            .iter()
+            .find(|m| m["type"] == "candidate")
+            .unwrap(),
+    );
+    let mut recovered = session();
+    assert!(
+        step(&mut recovered, &request(&[2, 1], Some(999), None, "search"))
+            .unwrap_err()
+            .contains("Unknown or expired snapshot")
+    );
+    let input =
+        json!({"quantities":[2,1], "initial_placement":layout, "mode":"search", "budget_ms":0});
+    let messages = step(&mut recovered, &input.to_string()).unwrap();
+    let expanded = messages.iter().find(|m| m["type"] == "candidate").unwrap();
+    let expanded_layout = external(expanded);
+    for placement in layout["placements"].as_array().unwrap() {
+        assert!(
+            expanded_layout["placements"]
+                .as_array()
+                .unwrap()
+                .contains(placement)
+        );
+    }
+    let mut remaining = expanded_layout["placements"].as_array().unwrap().clone();
+    let removed = remaining.iter().position(|p| p["item_id"] == 0).unwrap();
+    remaining.remove(removed);
+    let subset =
+        json!({"used_length_mm":expanded_layout["used_length_mm"], "placements":remaining});
+    let subset_input =
+        json!({"quantities":[1,1], "initial_placement":subset, "mode":"search", "budget_ms":0});
+    let messages = step(&mut recovered, &subset_input.to_string()).unwrap();
+    let restored = messages.iter().find(|m| m["type"] == "candidate").unwrap();
+    assert_eq!(external(restored)["placements"], subset["placements"]);
+    let id = candidate(&messages);
+    assert!(Layout::from_snapshot(&recovered.snapshots[&id].layout_snapshot).is_feasible());
+}
+
+#[test]
+fn invalid_external_layout_is_a_recoverable_warm_error_not_a_cold_start() {
+    let mut session = session();
+    for placement in [
+        json!({"item_id":5,"rotation":0,"translation":[1,1]}),
+        json!({"item_id":0,"rotation":45,"translation":[1,1]}),
+        json!({"item_id":0,"rotation":0,"translation":[-100,1]}),
+        json!({"item_id":-1,"rotation":0,"translation":[1,1]}),
+    ] {
+        let input = json!({"quantities":[1,0], "initial_placement":{"used_length_mm":30,"placements":[placement]},
+            "mode":"search", "budget_ms":0});
+        let error = step(&mut session, &input.to_string()).unwrap_err();
+        assert!(
+            error.starts_with("Invalid initial placement")
+                || error.starts_with("Initial placement"),
+            "{error}"
+        );
+    }
+}
+
 fn candidate(messages: &[Value]) -> u32 {
     messages
         .iter()
@@ -194,6 +276,14 @@ fn request_and_constructor_boundaries_are_rejected() {
     }
     assert!(SheetSession::create("{}", 0.0, "unknown").is_err());
     assert!(SheetSession::create("{}", f32::NAN, "fast").is_err());
+    let large = json!({"quantities":[500,0], "mode":"search", "budget_ms":0,
+        "initial_placement":{"used_length_mm":100, "placements":(0..500).map(|_| json!({
+            "item_id":0,"rotation":0,"translation":[1,1],"padding":"x".repeat(140)
+        })).collect::<Vec<_>>()}})
+    .to_string();
+    assert!(large.len() > 64 * 1024);
+    assert!(session.parse_request(&large).is_ok());
+    assert!(session.parse_request(&" ".repeat(1024 * 1024 + 1)).is_err());
 }
 
 #[test]
@@ -287,7 +377,7 @@ fn fixed_phase_deadline_cannot_be_reset_and_observes_parent_interrupt() {
 }
 
 #[test]
-fn finite_compress_restarts_exhausted_phases_until_the_original_deadline() {
+fn finite_compress_restarts_exhausted_runs_without_reexploring() {
     use sparrow::config::ShrinkDecayStrategy;
     let mut session = session();
     session.config.expl_cfg.max_conseq_failed_attempts = Some(1);
@@ -307,15 +397,15 @@ fn finite_compress_restarts_exhausted_phases_until_the_original_deadline() {
     session
         .execute(request, 43, &mut term, |message| messages.push(message))
         .unwrap();
-    assert!(Instant::now() >= deadline);
+    assert!(Instant::now() >= deadline || session.compression.is_some());
     assert_eq!(term.global_deadline, Some(deadline));
     assert_eq!(term.timeout_at(), Some(deadline));
-    assert!(
+    assert_eq!(
         messages
             .iter()
             .filter(|m| m["report"] == "ExplFeas")
-            .count()
-            > 2
+            .count(),
+        1
     );
     assert_eq!(
         messages
@@ -335,50 +425,161 @@ fn finite_compress_restarts_exhausted_phases_until_the_original_deadline() {
 }
 
 #[test]
-fn geometric_bound_ignores_zero_demand_and_finishes_without_spinning() {
+fn zero_budget_preserves_resident_compression() {
     let mut session = session();
-    let input = session
-        .parse_request(&request(&[0, 1], None, None, "compress"))
+    let first = candidate(&step(&mut session, &request(&[2, 1], None, None, "search")).unwrap());
+    install_resident(&mut session, first, &[2, 1]);
+    session.compression.as_mut().unwrap().state.failed_attempts = 7;
+    let messages = step(
+        &mut session,
+        &request(&[2, 1], Some(first), None, "compress"),
+    )
+    .unwrap();
+    assert_eq!(
+        session.compression.as_ref().unwrap().state.failed_attempts,
+        7
+    );
+    assert_eq!(session.compression.as_ref().unwrap().state.attempts, 0);
+    assert_eq!(messages.last().unwrap()["type"], "finished");
+}
+
+fn install_resident(session: &mut SheetSession, snapshot: u32, quantities: &[usize]) {
+    let parsed = session
+        .parse_request(&request(
+            quantities,
+            Some(snapshot),
+            Some(snapshot),
+            "compress",
+        ))
         .unwrap();
-    let (instance, initial) = session.prepare(&input, 42).unwrap();
-    let mut problem = SPProblem::new(instance);
-    problem.restore(&initial);
-    assert!(geometric_lower_bound(&problem) < 20.0);
-    let bound = geometric_lower_bound(&problem);
-    problem.change_strip_width(bound);
-    let at_bound = problem.save();
-    let started = Instant::now();
-    struct FinalCounter(usize);
-    impl SolutionListener for FinalCounter {
-        fn report_phase(&mut self, _: OptimizationPhase) {}
-        fn report(&mut self, report: ReportType, _: &SPSolution, _: &SPInstance) {
-            if matches!(report, ReportType::Final) {
-                self.0 += 1;
-            }
+    let (instance, initial) = session.prepare(&parsed, 42).unwrap();
+    let signature = layout_signature(&instance, &initial, session.epoch);
+    let mut config = session.config.cmpr_cfg;
+    config.shrink_decay = sparrow::config::ShrinkDecayStrategy::FailureBased(0.999);
+    config.shrink_range = (0.001, 0.000001);
+    session.compression = Some(ResidentCompression {
+        state: CompressionState::new(
+            instance,
+            initial,
+            Xoshiro256PlusPlus::seed_from_u64(42),
+            config,
+        ),
+        quantities: quantities.to_vec(),
+        slice_start: signature,
+    });
+}
+
+#[test]
+fn compression_resumes_across_slices_and_equivalent_snapshot_ids() {
+    use std::cell::Cell;
+    struct Slice(Cell<usize>);
+    impl Terminator for Slice {
+        fn kill(&self) -> bool {
+            let checks = self.0.get();
+            self.0.set(checks + 1);
+            checks > 12
+        }
+        fn new_timeout(&mut self, _: Duration) {}
+        fn timeout_at(&self) -> Option<Instant> {
+            None
         }
     }
-    let mut listener = FinalCounter(0);
-    // Exercise the lower-bound exit directly, independently of LBF's placement slack.
-    let deadline = started + Duration::from_secs(10);
-    let input = session
-        .parse_request(
-            &request(&[0, 1], None, None, "compress")
-                .replace("\"budget_ms\":0", "\"budget_ms\":10000"),
+    let mut session = session();
+    let first = candidate(&step(&mut session, &request(&[2, 1], None, None, "search")).unwrap());
+    install_resident(&mut session, first, &[2, 1]);
+    session.compression.as_mut().unwrap().state.failed_attempts = 7;
+    let mut initial = first;
+    let mut elapsed = Duration::ZERO;
+    for _ in 0..3 {
+        let parsed = session
+            .parse_request(
+                &json!({"quantities":[2,1], "initial_snapshot":initial,
+            "retain_snapshot":first, "mode":"compress", "budget_ms":10000})
+                .to_string(),
+            )
+            .unwrap();
+        let mut messages = vec![];
+        session
+            .execute(parsed, 999, &mut Slice(Cell::new(0)), |v| messages.push(v))
+            .unwrap();
+        let resident = session.compression.as_ref().unwrap();
+        assert!(resident.state.failed_attempts >= 7);
+        assert!(resident.state.active_elapsed > elapsed);
+        elapsed = resident.state.active_elapsed;
+        assert!(resident.state.attempts > 0);
+        initial = candidate(&messages); // a fresh ID for the unchanged slice-start geometry
+        assert_ne!(initial, first);
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| m["report"] == "ExplFeas")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn successful_insertion_invalidates_but_failed_search_and_invalid_requests_preserve() {
+    let mut session = session();
+    let first = candidate(&step(&mut session, &request(&[1, 0], None, None, "search")).unwrap());
+    install_resident(&mut session, first, &[1, 0]);
+    session.compression.as_mut().unwrap().state.failed_attempts = 9;
+    assert!(
+        step(
+            &mut session,
+            &request(&[500, 0], Some(first), Some(first), "search")
         )
-        .unwrap();
-    let term = SessionTerminator::new(&input, None);
-    compress_until(
-        &problem.instance,
-        at_bound,
-        42,
-        &session.config,
-        deadline,
-        deadline,
-        &term,
-        &mut listener,
+        .is_err()
     );
-    assert!(started.elapsed() < Duration::from_secs(2));
-    assert_eq!(listener.0, 1);
+    assert_eq!(
+        session.compression.as_ref().unwrap().state.failed_attempts,
+        9
+    );
+    assert!(step(&mut session, "{}").is_err());
+    assert_eq!(
+        session.compression.as_ref().unwrap().state.failed_attempts,
+        9
+    );
+    step(&mut session, &request(&[2, 1], Some(first), None, "search")).unwrap();
+    assert!(session.compression.is_none());
+}
+
+#[test]
+fn external_deletion_and_same_quantity_branch_invalidate_resident() {
+    let mut session = session();
+    let messages = step(&mut session, &request(&[2, 1], None, None, "search")).unwrap();
+    let first = candidate(&messages);
+    let mut layout = external(messages.iter().find(|v| v["type"] == "candidate").unwrap());
+    install_resident(&mut session, first, &[2, 1]);
+    layout["placements"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|p| p["item_id"] != 1);
+    let deleted = step(
+        &mut session,
+        &json!({"quantities":[2,0], "initial_placement":layout,
+        "mode":"search", "budget_ms":0})
+        .to_string(),
+    )
+    .unwrap();
+    assert!(session.compression.is_none());
+    install_resident(&mut session, candidate(&deleted), &[2, 0]);
+    let mut branch = external(deleted.iter().find(|v| v["type"] == "candidate").unwrap());
+    // Move both remaining pieces together to make a distinct feasible branch.
+    for placement in branch["placements"].as_array_mut().unwrap() {
+        let x = placement["translation"][0].as_f64().unwrap();
+        placement["translation"][0] = json!(x + 5.0);
+    }
+    branch["used_length_mm"] = json!(100);
+    step(
+        &mut session,
+        &json!({"quantities":[2,0], "initial_placement":branch,
+        "mode":"search", "budget_ms":0})
+        .to_string(),
+    )
+    .unwrap();
+    assert!(session.compression.is_none());
 }
 
 #[test]

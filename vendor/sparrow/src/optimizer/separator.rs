@@ -16,6 +16,7 @@ use rand::{Rng, RngExt, SeedableRng};
 use rand::rngs::Xoshiro256PlusPlus;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
+use std::time::Duration;
 use rayon::ThreadPool;
 
 #[cfg(test)]
@@ -29,6 +30,29 @@ pub struct SeparatorConfig {
     pub n_workers: usize,
     pub log_level: Level,
     pub sample_config: SampleConfig,
+}
+
+/// Checkpoint for one separation attempt. The matching `Separator` owns the live
+/// layout, tracker weights and worker random streams; keep them together.
+pub struct SeparationState {
+    pub best: (SPSolution, CTSnapshot),
+    pub min_loss: f32,
+    pub strikes: usize,
+    pub iterations: usize,
+    pub no_improvement: usize,
+    pub total_moves: usize,
+    pub total_evals: usize,
+    pub active_elapsed: Duration,
+    initial_strike_loss: Option<f32>,
+    started: bool,
+    finished: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeparationOutcome {
+    Paused,
+    Separated,
+    Exhausted,
 }
 
 pub struct Separator {
@@ -70,6 +94,104 @@ impl Separator {
             config,
             thread_pool: pool,
         }
+    }
+
+    pub fn start_separation(&self) -> SeparationState {
+        SeparationState {
+            best: (self.prob.save(), self.ct.save()),
+            min_loss: self.ct.get_total_loss(),
+            strikes: 0,
+            iterations: 0,
+            no_improvement: 0,
+            total_moves: 0,
+            total_evals: 0,
+            active_elapsed: Duration::ZERO,
+            initial_strike_loss: None,
+            started: false,
+            finished: false,
+        }
+    }
+
+    /// Resume only with the separator that created this checkpoint, without
+    /// changing its layout, tracker or worker streams between calls.
+    pub fn advance_separation(
+        &mut self,
+        state: &mut SeparationState,
+        term: &impl Terminator,
+        listener: &mut impl SolutionListener,
+    ) -> SeparationOutcome {
+        if state.finished {
+            return if state.min_loss == 0.0 { SeparationOutcome::Separated } else { SeparationOutcome::Exhausted };
+        }
+        if term.kill() {
+            return SeparationOutcome::Paused;
+        }
+        let start = Instant::now();
+        let width = self.prob.strip_width();
+        let density = self.prob.density() * 100.0;
+        let progress = |iteration, min_loss| SeparationProgress { strip_width: width, density, iteration, min_loss };
+        if !state.started {
+            listener.report_separation_progress(progress(0, state.min_loss));
+            state.started = true;
+        }
+        let outcome = loop {
+            if state.strikes >= self.config.strike_limit {
+                break SeparationOutcome::Exhausted;
+            }
+            let initial_loss = *state.initial_strike_loss.get_or_insert_with(|| self.ct.get_total_loss());
+            if state.no_improvement >= self.config.iter_no_imprv_limit {
+                if initial_loss * 0.98 <= state.min_loss {
+                    state.strikes += 1;
+                } else {
+                    state.strikes = 0;
+                }
+                self.rollback(&state.best.0, Some(&state.best.1));
+                state.no_improvement = 0;
+                state.initial_strike_loss = None;
+                continue;
+            }
+            let stats = self.move_items_multi();
+            state.total_moves += stats.total_moves;
+            state.total_evals += stats.total_evals;
+            let loss = self.ct.get_total_loss();
+            if loss == 0.0 {
+                state.best = (self.prob.save(), self.ct.save());
+                state.min_loss = loss;
+                listener.report_separation_progress(progress(state.iterations + 1, loss));
+                // Match the legacy counter: the successful iteration is reported
+                // in progress but not included in the GLS iteration count.
+                break SeparationOutcome::Separated;
+            } else if loss < state.min_loss {
+                listener.report(ReportType::ExplImproving, &self.prob.save(), &self.instance);
+                if loss < state.min_loss * 0.98 {
+                    state.no_improvement = 0;
+                }
+                state.best = (self.prob.save(), self.ct.save());
+                state.min_loss = loss;
+            } else {
+                state.no_improvement += 1;
+            }
+            listener.report_separation_progress(progress(state.iterations + 1, state.min_loss));
+            self.ct.update_weights();
+            state.iterations += 1;
+            // Complete all per-move accounting before yielding. Strike accounting
+            // and rollback remain pending and execute exactly once on resume.
+            if term.kill() {
+                break SeparationOutcome::Paused;
+            }
+        };
+        state.active_elapsed += start.elapsed();
+        if outcome != SeparationOutcome::Paused {
+            state.finished = true;
+            listener.report_separation_result(SeparationResult {
+                success: outcome == SeparationOutcome::Separated,
+                elapsed_seconds: state.active_elapsed.as_secs_f32(),
+                total_evals: state.total_evals,
+                total_moves: state.total_moves,
+                iterations: state.iterations,
+            });
+        }
+        outcome
     }
 
     /// Algorithm 9 from https://doi.org/10.48550/arXiv.2509.13329

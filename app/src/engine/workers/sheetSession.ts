@@ -192,7 +192,15 @@ export class SheetWorkerSession {
     const remaining = budgetMs - (performance.now() - started);
     if (remaining < 20) return;
     const initialSnapshot = initial ? this.snapshots.get(key(initial)) : undefined;
-    // An expired hard-timeout session must restart cold, never import rounded coordinates.
+    const catalogIds = new Map(this.catalog.parts.map((part, id) => [part.id, id]));
+    const initialPlacement = initial && initialSnapshot === undefined ? {
+      used_length_mm: initial.usedLengthMm,
+      placements: initial.placements.map((placement) => ({
+        item_id: catalogIds.get(placement.partId) ?? -1,
+        rotation: placement.angleDeg,
+        translation: [placement.xMm, placement.yMm] as [number, number],
+      })),
+    } : undefined;
     const keep = new Set([initialSnapshot, this.retained]);
     this.snapshots = new Map([...this.snapshots].filter(([, snapshot]) => keep.has(snapshot)));
     let markIdle!: () => void;
@@ -242,6 +250,7 @@ export class SheetWorkerSession {
         seed,
         quantities: this.catalog.parts.map((part) => quantities.get(part.id) ?? 0),
         initialSnapshot,
+        initialPlacement,
         retainSnapshot: this.retained,
         mode:
           initial &&

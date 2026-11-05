@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { cpuBudget, MAX_SOLVER_THREADS } from '../../engine/cpuBudget';
 import type { Preset, TimeLimit } from '../../engine/model';
 import { TIME_LIMITS, type SolverSettings, type Threads } from '../../project/model';
 import { useStudio } from '../context';
@@ -19,6 +20,9 @@ const isolated = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolat
 export function SettingsView() {
   const { project, edit } = useStudio();
   const settings = project.settings;
+  const budget = cpuBudget(settings.threads);
+  const threadLimit = Math.min(budget.logicalThreads, MAX_SOLVER_THREADS);
+  const displayedThreads = settings.threads === 0 ? 0 : Math.min(settings.threads, threadLimit);
   const [selected, setSelected] = useState<Item | undefined>('solve');
   const update = (change: Partial<SolverSettings>) =>
     edit((current) => ({ ...current, settings: { ...current.settings, ...change } }));
@@ -120,18 +124,57 @@ export function SettingsView() {
                       <label className="field">
                         Solver threads
                         <select
-                          value={settings.threads}
-                          onChange={(event) =>
-                            update({ threads: Number(event.target.value) as Threads })
-                          }
+                          value={displayedThreads}
+                          onChange={(event) => update({ threads: Number(event.target.value) })}
                         >
-                          {([0, 1, 2, 3] as Threads[]).map((threads) => (
+                          {Array.from({ length: threadLimit + 1 }, (_, threads) => (
                             <option key={threads} value={threads}>
                               {threadsLabel(threads)}
                             </option>
                           ))}
                         </select>
                       </label>
+                      <p className="muted">
+                        CPU limits reserve one logical thread where possible. Each sheet uses{' '}
+                        {budget.effectiveThreads} solver thread
+                        {budget.effectiveThreads === 1 ? '' : 's'}.
+                      </p>
+                      {settings.threads > budget.effectiveThreads && (
+                        <p className="muted">
+                          Saved preference: {settings.threads} threads. At runtime this machine
+                          lowers it to {budget.effectiveThreads}; the saved preference is unchanged.
+                        </p>
+                      )}
+                      {project.stock.packing === 'sheets' && (
+                        <>
+                          <label className="field">
+                            Concurrent sheets
+                            <select
+                              value={Math.min(settings.sheetConcurrency, budget.concurrencyCap)}
+                              onChange={(event) =>
+                                update({ sheetConcurrency: Number(event.target.value) })
+                              }
+                            >
+                              {Array.from(
+                                { length: budget.concurrencyCap },
+                                (_, index) => index + 1,
+                              ).map((count) => (
+                                <option key={count} value={count}>
+                                  {count}
+                                </option>
+                              ))}
+                            </select>
+                            <span className="muted">
+                              Default: 3. The CPU budget reserves one logical thread where possible
+                              and allows up to {budget.concurrencyCap} concurrent sheets at{' '}
+                              {budget.effectiveThreads} solver thread
+                              {budget.effectiveThreads === 1 ? '' : 's'} per sheet. A saved higher
+                              concurrency is reduced only at runtime. Insertion decisions remain
+                              sequential.
+                            </span>
+                          </label>
+                        </>
+                      )}
                       {!isolated && (
                         <span className="muted">This browser session runs one thread.</span>
                       )}
@@ -212,11 +255,12 @@ function SettingsExplanation({ item }: { item: Item }) {
           the configured number of consecutive insertion failures (default: 3), the solver moves to
           the next sheet. A successful insertion resets the failure count. If all parts fit on one
           sheet, compression continues in configured-duration slices until the total deadline or
-          manual Stop; in Automatic mode it continues until Stop. If several sheets are needed, the
-          last sheet is compressed once when the remaining parts are placed. The same flow applies
-          to every rotation rule, including continuous rotations. The total time limit and manual
-          Stop can interrupt any stage, so a short total budget may expire before later sheets are
-          processed. The best validated layout found so far is kept.
+          manual Stop; in Automatic mode it continues until Stop. For multiple sheets, boards
+          compress in parallel, then the solver fills earlier boards first by moving suitable parts
+          from the last board toward the front. Each move is validated before both boards are
+          updated. The same flow applies to every rotation rule, including continuous rotations. The
+          total time limit and manual Stop can interrupt any stage, so a short total budget may
+          expire before later sheets are processed. The best validated layout found so far is kept.
         </p>
         <p className="muted">
           Settings apply to the next run. They do not change the current solution.
@@ -235,8 +279,11 @@ function SettingsExplanation({ item }: { item: Item }) {
   return (
     <Explanation title="Solver threads">
       <p>
-        Automatic leaves one processor core free and uses up to 3 threads. More threads stop helping
-        beyond that.
+        Automatic calculates the CPU budget from the logical processor count, reserving one thread
+        where possible. Concurrent sheets share that budget: their limit is the budget divided by
+        the effective solver threads per sheet, with at least one sheet allowed. Manual thread
+        preferences saved on another machine are lowered at runtime when necessary, without changing
+        the saved value.
       </p>
       <p className="muted">
         Several threads need a browser session with shared memory. Otherwise, sparrow runs one

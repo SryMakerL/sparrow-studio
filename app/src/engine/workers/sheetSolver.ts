@@ -75,11 +75,7 @@ export function sheetStripSolver(revision: number, threads?: number): StripAttem
     session?.close();
     session =
       catalog.settings.materialWidthMm > catalog.settings.clearanceMm
-        ? new SheetWorkerSession(
-            { ...catalog, parts: catalog.parts.filter((part) => part.quantity > 0) },
-            revision,
-            threads,
-          )
+        ? new SheetWorkerSession(catalog, revision, threads)
         : undefined;
     await session?.open(signal);
   };
@@ -88,6 +84,7 @@ export function sheetStripSolver(revision: number, threads?: number): StripAttem
     session = undefined;
   };
   attempt.acceptCandidate = (result) => session?.accept(result);
+  attempt.forkSheet = () => sheetStripSolver(revision, threads);
   return attempt;
 }
 function polygonAttempt(
