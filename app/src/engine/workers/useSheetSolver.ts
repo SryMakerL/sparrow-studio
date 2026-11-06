@@ -9,6 +9,11 @@ export function useSheetSolver() {
   const [job, setJob] = useState<Job>();
   const [result, setResult] = useState<Result>();
   const [currentResult, setCurrentResult] = useState<Result>();
+  const [sheetProgress, setSheetProgress] = useState<{
+    sheetIndex: number;
+    phase: 'Insertion' | 'Compression';
+    insertionFailures: number;
+  }>();
   const [state, setState] = useState<RunState>('Ready');
   const [error, setError] = useState('');
   const [elapsed, setElapsed] = useState(0);
@@ -32,6 +37,7 @@ export function useSheetSolver() {
     active.current = undefined;
     setResult(undefined);
     setCurrentResult(undefined);
+    setSheetProgress(undefined);
     setState('Ready');
     setError('');
     setElapsed(0);
@@ -72,6 +78,14 @@ export function useSheetSolver() {
         if (reply.type !== 'validated') throw Error('Unexpected validation reply.');
         return reply.validation;
       },
+      onProgress: (progress) => {
+        if (active.current === controller && !controller.signal.aborted)
+          setSheetProgress({
+            sheetIndex: progress.sheetIndex,
+            phase: progress.phase,
+            insertionFailures: progress.insertionFailures,
+          });
+      },
       onCurrentRound: (next) => {
         if (active.current === controller && !controller.signal.aborted) setCurrentResult(next);
       },
@@ -107,6 +121,7 @@ export function useSheetSolver() {
     job,
     result,
     currentResult,
+    sheetProgress,
     state,
     error,
     elapsed,

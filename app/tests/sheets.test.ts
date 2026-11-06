@@ -670,7 +670,7 @@ describe('rounds, inventory and incumbents', () => {
         onProgress: (p) => rounds.push(p.roundIndex),
       }),
     );
-    expect(rounds).toEqual([0, 1, 2]);
+    expect([...new Set(rounds)]).toEqual([0, 1, 2]);
     expect(outcome.reason).toBe('Unplaceable');
     expect(outcome.result.unplaced![0].quantity).toBe(1);
   });

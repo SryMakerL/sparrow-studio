@@ -91,9 +91,21 @@ export function LiveView() {
               </div>
               <span className="muted">
                 {batch
-                  ? `${completed?.length ?? 0} sheets processed · ${currentResult?.unplaced?.reduce((sum, part) => sum + part.quantity, 0) ?? copyCount(runJob?.parts ?? [])} parts remaining. Each sheet alternates insertion, ${runJob?.settings.sheetCompressionSeconds ?? 10}-second compression, and insertion again. After ${runJob?.settings.sheetInsertionFailures ?? 3} consecutive insertion failures, the next sheet is processed; a successful insertion resets the count. If all parts fit on one sheet, compression continues until the total deadline or Stop (Automatic: until Stop). Otherwise, the last sheet is compressed once after all remaining parts are placed. This applies to every rotation rule. The total time limit and Stop can interrupt any stage.`
+                  ? `${completed?.length ?? 0} sheets processed · ${currentResult?.unplaced?.reduce((sum, part) => sum + part.quantity, 0) ?? copyCount(runJob?.parts ?? [])} parts remaining.`
                   : 'Of the best valid layout so far.'}
               </span>
+              {batch && running && solver.sheetProgress && (
+                <dl className="facts">
+                  <dt>Current stage</dt>
+                  <dd>{solver.sheetProgress.phase}</dd>
+                  <dt>Current sheet</dt>
+                  <dd>{solver.sheetProgress.sheetIndex + 1}</dd>
+                  <dt>Insertion failures</dt>
+                  <dd>
+                    {solver.sheetProgress.insertionFailures} / {runJob?.settings.sheetInsertionFailures ?? 3}
+                  </dd>
+                </dl>
+              )}
               <div className="stack">
                 <span className="muted">
                   {formatSeconds(solver.elapsed)}

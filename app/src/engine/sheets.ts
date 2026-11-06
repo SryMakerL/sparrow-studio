@@ -30,6 +30,8 @@ export type SheetProgress = {
   roundIndex: number;
   sheetIndex: number;
   lastImprovementAt: number;
+  phase: 'Insertion' | 'Compression';
+  insertionFailures: number;
 };
 
 type SheetOptions = {
@@ -455,11 +457,15 @@ async function solveSheetRound(
     let lastImprovementAt = performance.now();
     let best: SheetEntry | undefined;
     let selected: string[] = [];
+    let insertionFailures = 0;
+    let phase: SheetProgress['phase'] = 'Insertion';
     const progress = () =>
       options.onProgress?.({
         roundIndex: options.roundIndex ?? 0,
         sheetIndex,
         lastImprovementAt,
+        phase,
+        insertionFailures,
       });
     progress();
     observe = (entry) => {
@@ -486,10 +492,11 @@ async function solveSheetRound(
     };
     const pool = ordered.flatMap((p) => Array.from({ length: remaining.get(p.id)! }, () => p.id));
     if (!pool.length) break;
-    let insertionFailures = 0;
     let initialPass = true;
     while (!stopped()) {
       if (!initialPass && best) {
+        phase = 'Compression';
+        progress();
         successful.clear();
         await attempt([...selected], 'compress', best.result);
         if (stopped()) break;
@@ -507,6 +514,8 @@ async function solveSheetRound(
           continue;
         }
       }
+      phase = 'Insertion';
+      progress();
       const beforeInsertion = selected.length;
       successful.clear();
       rejected.clear();
@@ -561,6 +570,7 @@ async function solveSheetRound(
         initialPass = false;
       } else {
         insertionFailures = selected.length > beforeInsertion ? 0 : insertionFailures + 1;
+        progress();
         if (insertionFailures >= insertionFailureLimit) break;
       }
       if (!best) break;
