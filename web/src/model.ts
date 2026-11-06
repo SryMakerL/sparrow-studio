@@ -1,3 +1,4 @@
+export const MAX_SOLVER_THREADS = 32;
 export type Point = [number, number];
 export type Ring = Point[];
 export type RotationRule = { kind: 'discrete'; degrees: number[] } | { kind: 'continuous' };

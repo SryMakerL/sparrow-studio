@@ -1,6 +1,7 @@
 import { normalizeSheetStocks, stockArea, stockGeometryKey, usedStockArea } from '../engine/stock';
 import type { SheetStock } from '../engine/model';
 import {
+  MAX_SOLVER_THREADS,
   LIMITS,
   newId,
   type Job,
@@ -54,7 +55,11 @@ export type MachinePreset = { id: string; name: string; gapMm: number };
 /** Local solving only, for now. */
 export type SolveWith = 'local';
 /** 0 lets the solver choose. */
-export type Threads = 0 | 1 | 2 | 3;
+export type Threads =
+  | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
+  | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16
+  | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24
+  | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32;
 export type SolverSettings = {
   solveWith: SolveWith;
   timeLimitSeconds: TimeLimit;
@@ -201,6 +206,12 @@ export function startBlockers(project: ProjectDocument): string[] {
     project.settings.sheetInsertionFailures > 100
   )
     reasons.push('Set consecutive sheet insertion failures from 1 to 100 in Settings.');
+  if (
+    !Number.isInteger(project.settings.threads) ||
+    project.settings.threads < 0 ||
+    project.settings.threads > MAX_SOLVER_THREADS
+  )
+    reasons.push(`Choose Automatic or 1–${MAX_SOLVER_THREADS} solver threads in Settings.`);
   if (project.stock.packing === 'sheets') {
     if (project.stock.sheets !== undefined)
       try {

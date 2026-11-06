@@ -2,7 +2,7 @@ import RotationControl from './components/RotationControl';
 import {readRecovery,saveRecovery} from './storage/recovery';
 import {useDismissibleMenu} from './components/useDismissibleMenu';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { DEFAULT_SETTINGS, POLICY, defaultDXFLayers, rotationSummary, type Document, type Part, type Point, type Result, type RotationRule } from './model';
+import { MAX_SOLVER_THREADS, DEFAULT_SETTINGS, POLICY, defaultDXFLayers, rotationSummary, type Document, type Part, type Point, type Result, type RotationRule } from './model';
 import { bounds } from './geometry/normalize';
 import { netArea } from './geometry/validate';
 import { pathData } from './geometry/path';
@@ -74,7 +74,7 @@ export default function App({initialDocument=emptyProject(),initialError='',load
     const done=()=>{clearTimeout(timeout);worker.terminate();};
     worker.onmessage=done;
     worker.onerror=event=>{event.preventDefault();done();};
-    worker.postMessage({type:'preload',threads:crossOriginIsolated&&typeof SharedArrayBuffer!=='undefined'&&navigator.hardwareConcurrency>2?3:1});
+    worker.postMessage({type:'preload',threads:crossOriginIsolated&&typeof SharedArrayBuffer!=='undefined'?Math.min(MAX_SOLVER_THREADS,Math.max(1,(navigator.hardwareConcurrency||2)-1)):1});
     return done;
   },[loadingExample]);
   const defaultExampleCancelled=useRef(false);
@@ -398,7 +398,7 @@ export default function App({initialDocument=emptyProject(),initialError='',load
           {doc.settings.clearanceMm>0&&<small>sparrow also reserves {length(doc.settings.clearanceMm)} {unit} at material edges. This is not cutting kerf.</small>}
           {(!Number.isFinite(doc.settings.clearanceMm)||doc.settings.clearanceMm<0||doc.settings.clearanceMm>=doc.settings.materialWidthMm)&&<small role="alert" className="field-error">Enter zero or a positive clearance smaller than the material width.</small>}
           <label>Stop condition<select value={doc.settings.timeLimitSeconds??'auto'} disabled={locked} onChange={e=>commit({...doc,settings:{...doc.settings,timeLimitSeconds:e.target.value==='auto'?null:Number(e.target.value) as 10|30|60|120|300|600}},false)}><option value="auto">Automatic</option>{[10,30,60,120,300,600].map(s=><option value={s} key={s}>{s<60?`Up to ${s} seconds`:`Up to ${s/60} minute${s>60?'s':''}`}</option>)}</select></label>
-          <details className="solver-options"><summary>Solver options</summary><label>Search preset<select disabled={locked} value={doc.settings.solverPreset??'standard'} aria-describedby="preset-description" onChange={e=>commit({...doc,settings:{...doc.settings,solverPreset:e.target.value as 'standard'|'fast'}},false)}><option value="standard">Standard</option><option value="fast">Fast</option></select></label><small id="preset-description">{doc.settings.solverPreset==='fast'?'Good layouts sooner. A greedier search that may miss the best final layout.':'A more thorough search for the best final layout.'}</small><label>Solver threads<select disabled={locked} value={threads} onChange={e=>setThreads(Number(e.target.value))}><option value={0}>Automatic</option>{[1,2,3].map(n=><option key={n} value={n}>{n}</option>)}</select></label>{solver.workers&&<small>Last initialized run: {solver.workers.actual} solver worker{solver.workers.actual===1?'':'s'}.{solver.workers.reason&&` ${solver.workers.reason}`}</small>}<small>{crossOriginIsolated?'Automatic leaves a core free, up to 3 threads.':'This browser session uses one thread.'}</small></details>
+          <details className="solver-options"><summary>Solver options</summary><label>Search preset<select disabled={locked} value={doc.settings.solverPreset??'standard'} aria-describedby="preset-description" onChange={e=>commit({...doc,settings:{...doc.settings,solverPreset:e.target.value as 'standard'|'fast'}},false)}><option value="standard">Standard</option><option value="fast">Fast</option></select></label><small id="preset-description">{doc.settings.solverPreset==='fast'?'Good layouts sooner. A greedier search that may miss the best final layout.':'A more thorough search for the best final layout.'}</small><label>Solver threads<select disabled={locked} value={threads} onChange={e=>setThreads(Number(e.target.value))}><option value={0}>Automatic</option>{Array.from({length:MAX_SOLVER_THREADS},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}</option>)}</select></label>{solver.workers&&<small>Last initialized run: {solver.workers.actual} solver worker{solver.workers.actual===1?'':'s'}.{solver.workers.reason&&` ${solver.workers.reason}`}</small>}<small>{crossOriginIsolated?'Automatic leaves a core free, up to 3 threads.':'This browser session uses one thread.'}</small></details>
           <small>Stops automatically when the search stalls. You can stop at any time.</small>
         </section>
       </aside>

@@ -68,7 +68,7 @@ fn fast_preset_matches_imported_search_config_and_respects_worker_limit() {
     assert_eq!(fast.expl_cfg.max_conseq_failed_attempts, Some(10));
     assert_eq!(fast.expl_cfg.separator_config.iter_no_imprv_limit, 50);
     assert_eq!(fast.expl_cfg.separator_config.strike_limit, 2);
-    assert_eq!(fast.expl_cfg.separator_config.n_workers, 2);
+    assert_eq!(fast.expl_cfg.separator_config.n_workers, 3);
     assert_eq!(fast.cmpr_cfg.separator_config.n_workers, 3);
     assert_eq!(fast.cmpr_cfg.shrink_range, (0.0005, 0.0001));
     assert!(matches!(
@@ -95,6 +95,13 @@ fn fast_preset_matches_imported_search_config_and_respects_worker_limit() {
             .separator_config
             .strike_limit
     );
+    for preset in ["standard", "fast"] {
+        for workers in [1, 3, 4, 8, 32] {
+            let config = solver_config(preset, workers, None).unwrap();
+            assert_eq!(config.expl_cfg.separator_config.n_workers, workers);
+            assert_eq!(config.cmpr_cfg.separator_config.n_workers, workers);
+        }
+    }
     assert!(solver_config("unknown", 3, None).is_err());
 }
 

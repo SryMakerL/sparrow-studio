@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Preset, TimeLimit } from '../../engine/model';
+import { MAX_SOLVER_THREADS, type Preset, type TimeLimit } from '../../engine/model';
 import { TIME_LIMITS, type SolverSettings, type Threads } from '../../project/model';
 import { useStudio } from '../context';
 import { RunBar } from '../RunBar';
@@ -125,7 +125,7 @@ export function SettingsView() {
                             update({ threads: Number(event.target.value) as Threads })
                           }
                         >
-                          {([0, 1, 2, 3] as Threads[]).map((threads) => (
+                          {Array.from({ length: MAX_SOLVER_THREADS + 1 }, (_, threads) => threads as Threads).map((threads) => (
                             <option key={threads} value={threads}>
                               {threadsLabel(threads)}
                             </option>
@@ -235,8 +235,8 @@ function SettingsExplanation({ item }: { item: Item }) {
   return (
     <Explanation title="Solver threads">
       <p>
-        Automatic leaves one processor core free and uses up to 3 threads. More threads stop helping
-        beyond that.
+        Automatic reserves one reported logical core and uses up to {MAX_SOLVER_THREADS} threads.
+        With 8 logical cores, Automatic uses 7 threads.
       </p>
       <p className="muted">
         Several threads need a browser session with shared memory. Otherwise, sparrow runs one

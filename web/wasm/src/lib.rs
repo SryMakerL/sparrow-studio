@@ -140,7 +140,6 @@ fn solver_config(preset: &str, workers: usize, seconds: Option<u32>) -> Result<S
             config.expl_cfg.max_conseq_failed_attempts = Some(10);
             config.expl_cfg.separator_config.iter_no_imprv_limit = 50;
             config.expl_cfg.separator_config.strike_limit = 2;
-            config.expl_cfg.separator_config.n_workers = 2;
             config.cmpr_cfg.shrink_range = (0.0005, 0.0001);
             config.cmpr_cfg.shrink_decay = ShrinkDecayStrategy::FailureBased(0.9);
             config.cmpr_cfg.separator_config.iter_no_imprv_limit = 50;
@@ -149,8 +148,8 @@ fn solver_config(preset: &str, workers: usize, seconds: Option<u32>) -> Result<S
         },
         _ => return Err("Invalid solver preset"),
     }
-    config.expl_cfg.separator_config.n_workers = config.expl_cfg.separator_config.n_workers.min(workers);
-    config.cmpr_cfg.separator_config.n_workers = config.cmpr_cfg.separator_config.n_workers.min(workers);
+    config.expl_cfg.separator_config.n_workers = workers;
+    config.cmpr_cfg.separator_config.n_workers = workers;
     if let Some(seconds) = seconds {
         config.expl_cfg.time_limit = Duration::from_secs_f64(seconds as f64 * 0.8);
         config.cmpr_cfg.time_limit = Duration::from_secs_f64(seconds as f64 * 0.2);

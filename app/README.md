@@ -13,7 +13,7 @@ npm run wasm:build
 npm run dev
 ```
 
-The dev server sends the cross-origin isolation headers, so the solver can use up to 3 threads.
+The dev server sends the cross-origin isolation headers, so the solver can use up to 32 threads. Settings offers Automatic or 1–32 threads. Automatic uses `min(32, max(1, hardwareConcurrency - 1))`: it reserves one reported logical core, so 8 logical cores use 7 threads. Without shared memory, the solver falls back to one thread.
 
 ## Sheet inventory and priority
 

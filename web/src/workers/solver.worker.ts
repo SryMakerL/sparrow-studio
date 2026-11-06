@@ -1,3 +1,4 @@
+import { MAX_SOLVER_THREADS } from '../model';
 import type { Start, SolverMessage } from './protocol';
 
 type PoolInit = { type: 'pool-init'; threads: number; init: { module_or_path: WebAssembly.Module; memory: WebAssembly.Memory }; receiver: number };
@@ -9,10 +10,10 @@ let skip = () => {};
 self.onmessage = ({ data }: MessageEvent<Start | { type: 'stop' } | { type: 'skip' }>) => {
   if (data.type === 'stop') { dispose(); self.close(); return; }
   if (data.type === 'skip') { skip(); return; }
-  const requested = data.threads ?? Math.min(3, Math.max(1, (navigator.hardwareConcurrency || 2) - 1));
+  const requested = data.threads ?? Math.min(MAX_SOLVER_THREADS, Math.max(1, (navigator.hardwareConcurrency || 2) - 1));
   const threads = self.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined' ? requested : 1;
-  if (!Number.isInteger(requested) || requested < 1 || requested > 3) {
-    self.postMessage({ type: 'error', runId: data.runId, documentRevision: data.documentRevision, message: 'Choose 1–3 solver threads.' });
+  if (!Number.isInteger(requested) || requested < 1 || requested > MAX_SOLVER_THREADS) {
+    self.postMessage({ type: 'error', runId: data.runId, documentRevision: data.documentRevision, message: `Choose 1–${MAX_SOLVER_THREADS} solver threads.` });
     return;
   }
   const start = data;

@@ -2,7 +2,7 @@ import { normalizeSheetStocks } from '../engine/stock';
 import type { SheetStock } from '../engine/model';
 import { validate } from '../engine/geometry/validate';
 import { normalizeJob } from '../engine/geometry/normalize';
-import { LIMITS } from '../engine/model';
+import { LIMITS, MAX_SOLVER_THREADS } from '../engine/model';
 import { normalizePart } from '../engine/geometry/normalize';
 import { TIME_LIMITS, PROJECT_FORMAT, PROJECT_VERSION, type ProjectDocument } from './model';
 
@@ -61,7 +61,9 @@ export function parseProject(value: unknown): ProjectDocument {
     settings.solveWith !== 'local' ||
     !TIME_LIMITS.includes(settings.timeLimitSeconds as never) ||
     !['standard', 'fast'].includes(settings.preset as string) ||
-    ![0, 1, 2, 3].includes(settings.threads as number)
+    !Number.isInteger(settings.threads) ||
+    (settings.threads as number) < 0 ||
+    (settings.threads as number) > MAX_SOLVER_THREADS
   )
     return fail('invalid solver settings.');
   const sheetCompressionSeconds =

@@ -64,6 +64,22 @@ describe('project document', () => {
     expect(first.map((part) => part.name)).toEqual(['001', '002']);
   });
 
+  it('validates solver threads in project files and start blockers', () => {
+    const project = addParts(newProject('Job'), [square(10)]);
+    for (const threads of [0, 1, 4, 8, 32] as const) {
+      const changed = { ...project, settings: { ...project.settings, threads } };
+      expect(parseProject(JSON.parse(serializeProject(changed))).settings.threads).toBe(threads);
+      expect(startBlockers(changed)).toEqual([]);
+    }
+    for (const threads of [-1, 33, 1.5, NaN, Infinity, null, '4', undefined]) {
+      const changed = { ...project, settings: { ...project.settings, threads } };
+      expect(() => parseProject(changed)).toThrow('invalid solver settings');
+      expect(startBlockers(changed as typeof project)).toEqual([
+        'Choose Automatic or 1–32 solver threads in Settings.',
+      ]);
+    }
+  });
+
   it('round-trips through a project file', () => {
     const project = addParts(newProject('Shop job'), [square(10, 3)]);
     expect(parseProject(JSON.parse(serializeProject(project)))).toEqual(project);
