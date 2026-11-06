@@ -12,13 +12,22 @@ export function sheetStripSolver(revision: number, threads?: number): StripAttem
     onCandidate?: (result: Result) => void,
     attemptBudgetMs?: number,
     initialPlacement?: Result,
+    onStarted?: (started: boolean) => void,
   ) =>
     session
-      ? session.attempt(job, signal, onCandidate, attemptBudgetMs, initialPlacement)
+      ? session.attempt(job, signal, onCandidate, attemptBudgetMs, initialPlacement, onStarted)
       : // Sparrow's strip inset requires positive width after clearance; retain the
         // geometry fallback for every stock kind until narrow-stock gap semantics exist.
         job.settings.materialWidthMm <= job.settings.clearanceMm
-        ? polygonAttempt(job, revision, signal, onCandidate, attemptBudgetMs, initialPlacement)
+        ? polygonAttempt(
+            job,
+            revision,
+            signal,
+            onCandidate,
+            attemptBudgetMs,
+            initialPlacement,
+            onStarted,
+          )
         : new Promise<Result | undefined>((resolve, reject) => {
             if (signal?.aborted) {
               resolve(undefined);
@@ -48,6 +57,7 @@ export function sheetStripSolver(revision: number, threads?: number): StripAttem
             const abort = () => finish();
             // Includes WASM startup and a hard deadline even for non-cooperative solver iterations.
             const timer = setTimeout(() => finish(), Math.min(25_000, attemptBudgetMs ?? Infinity));
+            onStarted?.(true);
             signal?.addEventListener('abort', abort, { once: true });
             worker.onmessage = ({ data }: MessageEvent<SolverMessage>) => {
               if (done || signal?.aborted) return;
@@ -97,6 +107,7 @@ function polygonAttempt(
   onCandidate?: (result: Result) => void,
   budgetMs = 2500,
   initialPlacement?: Result,
+  onStarted?: (started: boolean) => void,
 ): Promise<Result | undefined> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -117,6 +128,7 @@ function polygonAttempt(
     };
     const abort = () => finish();
     const timer = setTimeout(finish, budgetMs);
+    onStarted?.(true);
     signal?.addEventListener('abort', abort, { once: true });
     worker.onmessage = ({ data }) => {
       if (done) return;

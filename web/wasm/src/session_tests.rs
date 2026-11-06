@@ -334,13 +334,14 @@ fn finite_compress_restarts_exhausted_phases_until_the_original_deadline() {
             .count()
             > 2
     );
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|m| m["type"] == "phase" && m["phase"] == "Compression")
-            .count(),
-        1
-    );
+    for phase in ["Exploration", "Compression"] {
+        assert_eq!(
+            messages.iter()
+                .filter(|m| m["type"] == "phase" && m["phase"] == phase)
+                .count(),
+            1
+        );
+    }
     assert_eq!(messages.last().unwrap()["type"], "finished");
     let mut width = session.snapshots[&first].strip_width();
     for message in messages.iter().filter(|m| m["type"] == "candidate") {
@@ -352,50 +353,63 @@ fn finite_compress_restarts_exhausted_phases_until_the_original_deadline() {
 }
 
 #[test]
-fn geometric_bound_ignores_zero_demand_and_finishes_without_spinning() {
-    let mut session = session();
-    let input = session
-        .parse_request(&request(&[0, 1], None, None, "compress"))
-        .unwrap();
-    let (instance, initial) = session.prepare(&input, 42).unwrap();
-    let mut problem = SPProblem::new(instance);
-    problem.restore(&initial);
-    assert!(geometric_lower_bound(&problem) < 20.0);
-    let bound = geometric_lower_bound(&problem);
-    problem.change_strip_width(bound);
-    let at_bound = problem.save();
-    let started = Instant::now();
-    struct FinalCounter(usize);
-    impl SolutionListener for FinalCounter {
-        fn report_phase(&mut self, _: OptimizationPhase) {}
-        fn report(&mut self, report: ReportType, _: &SPSolution, _: &SPInstance) {
-            if matches!(report, ReportType::Final) {
-                self.0 += 1;
-            }
+fn geometric_bound_rearranges_single_and_identical_items_until_deadline() {
+    use jagua_rs::geometry::DTransformation;
+    use jagua_rs::probs::spp::entities::SPPlacement;
+    use sparrow::util::listener::SeparationResult;
+    use sparrow::util::terminator::BasicTerminator;
+
+    struct Counter {
+        reports: Vec<ReportType>,
+        phases: Vec<OptimizationPhase>,
+        evaluations: usize,
+        width: f32,
+        quantity: usize,
+    }
+    impl SolutionListener for Counter {
+        fn report_phase(&mut self, phase: OptimizationPhase) { self.phases.push(phase); }
+        fn report(&mut self, report: ReportType, solution: &SPSolution, _: &SPInstance) {
+            assert_eq!(solution.strip_width(), self.width);
+            assert_eq!(solution.layout_snapshot.placed_items.len(), self.quantity);
+            assert!(Layout::from_snapshot(&solution.layout_snapshot).is_feasible());
+            self.reports.push(report);
+        }
+        fn report_separation_result(&mut self, result: SeparationResult) {
+            self.evaluations += result.total_evals;
         }
     }
-    let mut listener = FinalCounter(0);
-    // Exercise the lower-bound exit directly, independently of LBF's placement slack.
-    let deadline = started + Duration::from_secs(10);
-    let input = session
-        .parse_request(
-            &request(&[0, 1], None, None, "compress")
-                .replace("\"budget_ms\":0", "\"budget_ms\":10000"),
-        )
-        .unwrap();
-    let term = SessionTerminator::new(&input, None);
-    compress_until(
-        &problem.instance,
-        at_bound,
-        42,
-        &session.config,
-        deadline,
-        deadline,
-        &term,
-        &mut listener,
-    );
-    assert!(started.elapsed() < Duration::from_secs(2));
-    assert_eq!(listener.0, 1);
+    for quantity in [1, 2] {
+        let mut session = SheetSession::create(&json!({
+            "name":"bound", "strip_height":10, "stock_length":20,
+            "items":[
+                {"id":0,"demand":1,"allowed_orientations":[0],"shape":{"type":"rectangle","data":{"x_min":0,"y_min":0,"width":9,"height":4}}},
+                {"id":1,"demand":2,"allowed_orientations":[0],"shape":{"type":"rectangle","data":{"x_min":0,"y_min":0,"width":4,"height":4}}}
+            ]
+        }).to_string(), 0.0, "fast").unwrap();
+        let input = session.parse_request(&request(&[0, quantity], None, None, "compress")).unwrap();
+        let (instance, _) = session.prepare(&input, 42).unwrap();
+        let mut problem = SPProblem::new(instance);
+        problem.change_strip_width(4.000001);
+        let bbox = problem.instance.items[1].0.shape_cd.bbox;
+        for i in 0..quantity {
+            problem.place_item(SPPlacement { item_id: 1,
+                d_transf: DTransformation::new(0.0,
+                    (0.0000005 - bbox.x_min, 0.5 + i as f32 * 4.5 - bbox.y_min)) });
+        }
+        assert!(problem.layout.is_feasible());
+        assert!(geometric_lower_bound(&problem) < 4.01);
+        let initial = problem.save();
+        let mut listener = Counter { reports: vec![], phases: vec![], evaluations: 0,
+            width: initial.strip_width(), quantity };
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(80);
+        compress_until(&problem.instance, initial, 42, &session.config,
+            started + Duration::from_millis(40), deadline, &BasicTerminator::new(), &mut listener);
+        assert!(Instant::now() >= deadline);
+        assert!(listener.evaluations > 0);
+        assert_eq!(listener.phases, vec![OptimizationPhase::Exploration, OptimizationPhase::Compression]);
+        assert_eq!(listener.reports, vec![ReportType::ExplFeas, ReportType::CmprFeas, ReportType::Final]);
+    }
 }
 
 #[test]
@@ -458,7 +472,7 @@ fn continuous_restores_snapshot_and_runs_each_optimizer_phase_once() {
                 .iter()
                 .filter(|m| m["type"] == "phase" && m["phase"] == "Exploration")
                 .count(),
-            2
+            1
         );
         assert_eq!(messages.last().unwrap()["type"], "finished");
         let restored = &session.snapshots[&candidate(&messages)];

@@ -210,7 +210,9 @@ impl SheetSession {
             config: &self.config,
             send,
         };
-        listener.report_phase(OptimizationPhase::Exploration);
+        if request.mode == Mode::Search {
+            listener.report_phase(OptimizationPhase::Exploration);
+        }
         listener.report(ReportType::ExplFeas, &initial, &instance);
         if request.mode == Mode::Compress && request.budget_ms.is_some() {
             let budget = Duration::from_secs_f64(request.budget_ms.unwrap() / 1000.0);
@@ -320,7 +322,7 @@ fn compress_until(
     listener: &mut impl SolutionListener,
 ) {
     use sparrow::optimizer::{
-        compress::compression_phase, explore::exploration_phase, separator::Separator,
+        compress::compression_phase, explore::{exploration_phase, rearrange}, separator::Separator,
     };
 
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
@@ -346,13 +348,7 @@ fn compress_until(
             // Collision geometry and rotations use f32; at this tolerance there is
             // no meaningful room below the proven area/orientation lower bound.
             let gap = best.strip_width() - bound;
-            if gap <= best.strip_width().abs().max(1.0) * 2e-6 {
-                log::info!(
-                    "[SESSION] compression reached the geometric lower bound; finishing early"
-                );
-                listener.report(ReportType::Final, &best, instance);
-                return;
-            }
+            let at_bound = gap <= best.strip_width().abs().max(1.0) * 2e-6;
             let max_shrink = (gap / best.strip_width() * 0.5).min(0.5);
             let mut problem = SPProblem::new(instance.clone());
             problem.restore(&best);
@@ -371,6 +367,16 @@ fn compress_until(
                 separator_config,
             );
             if term.kill() {
+                break;
+            }
+            if at_bound {
+                log::info!("[SESSION] at geometric lower bound; rearranging at fixed width");
+                best = rearrange(&mut separator, &best, listener, &term);
+                listener.report(
+                    if exploration { ReportType::ExplFeas } else { ReportType::CmprFeas },
+                    &best,
+                    instance,
+                );
                 break;
             }
             if exploration {

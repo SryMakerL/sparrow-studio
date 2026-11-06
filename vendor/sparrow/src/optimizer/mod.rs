@@ -94,7 +94,10 @@ fn minimum_strip_width(prob: &SPProblem) -> f32 {
         .sum();
     let mut min_width = (area / f64::from(container.height())) as f32 * (1.0 - REL_TOL);
 
-    for (item, _) in &prob.instance.items {
+    for (item, quantity) in &prob.instance.items {
+        if *quantity == 0 {
+            continue;
+        }
         let rotations = match &item.allowed_rotation {
             RotationRange::None => &[0.0][..],
             RotationRange::Discrete(rotations) => rotations.as_slice(),
@@ -113,4 +116,106 @@ fn minimum_strip_width(prob: &SPProblem) -> f32 {
         min_width = min_width.max(item_width);
     }
     min_width + width_inset
+}
+
+#[cfg(test)]
+mod rearrange_tests {
+    use super::*;
+    use crate::optimizer::explore::rearrange;
+    use crate::util::listener::{SeparationResult, SolutionListener};
+    use crate::util::terminator::BasicTerminator;
+    use jagua_rs::entities::Item;
+    use jagua_rs::geometry::{DTransformation, OriginalShape, primitives::Rect,
+        shape_modification::{ShapeModifyConfig, ShapeModifyMode}};
+    use jagua_rs::probs::spp::entities::{SPPlacement, Strip};
+    use jagua_rs::Instant;
+    use std::cell::Cell;
+
+    fn separator(quantity: usize) -> Separator {
+        let config = DEFAULT_SPARROW_CONFIG;
+        let item = |id, width| Item::new(id, OriginalShape {
+            shape: Rect::try_new(0.0, 0.0, width, 4.0).unwrap().into(),
+            pre_transform: DTransformation::empty(),
+            modify_mode: ShapeModifyMode::Inflate,
+            modify_config: ShapeModifyConfig::default(),
+        }, RotationRange::None, None, config.cde_config.item_surrogate_config).unwrap();
+        let instance = SPInstance::new(vec![(item(0, 4.0), quantity), (item(1, 9.0), 0)],
+            Strip::new(10.0, config.cde_config, ShapeModifyConfig::default(), 4.000001).unwrap());
+        let mut problem = SPProblem::new(instance.clone());
+        for i in 0..quantity {
+            problem.place_item(SPPlacement { item_id: 0,
+                d_transf: DTransformation::new(0.0, (0.0000005, 0.5 + i as f32 * 4.5)) });
+        }
+        assert!(problem.layout.is_feasible());
+        let mut sep_config = config.expl_cfg.separator_config;
+        sep_config.n_workers = 1;
+        Separator::new(instance, problem, Xoshiro256PlusPlus::seed_from_u64(42), sep_config)
+    }
+
+    #[derive(Default)]
+    struct Counter { evaluations: usize, reports: usize }
+    impl SolutionListener for Counter {
+        fn report(&mut self, _: ReportType, _: &SPSolution, _: &SPInstance) { self.reports += 1; }
+        fn report_separation_result(&mut self, result: SeparationResult) {
+            self.evaluations += result.total_evals;
+        }
+    }
+
+    #[test]
+    fn single_and_identical_items_search_until_deadline_without_publishing() {
+        for quantity in [1, 2] {
+            let mut sep = separator(quantity);
+            let initial = sep.prob.save();
+            let deadline = Instant::now() + Duration::from_millis(40);
+            let term = BasicTerminator { timeout: Some(deadline) };
+            let mut listener = Counter::default();
+            let result = rearrange(&mut sep, &initial, &mut listener, &term);
+            assert!(Instant::now() >= deadline);
+            assert!(listener.evaluations > 0);
+            assert_eq!(listener.reports, 0);
+            assert_eq!(result.strip_width(), initial.strip_width());
+            assert_eq!(result.layout_snapshot.placed_items.len(), quantity);
+            assert!(sep.prob.layout.is_feasible());
+            assert_eq!(sep.ct.get_total_loss(), 0.0);
+        }
+    }
+
+    #[test]
+    fn cancellation_keeps_feasible_fallback() {
+        struct Signal(Cell<bool>);
+        impl Terminator for Signal {
+            fn kill(&self) -> bool { self.0.get() }
+            fn new_timeout(&mut self, _: Duration) {}
+            fn timeout_at(&self) -> Option<Instant> { None }
+        }
+        struct CancelListener<'a> { signal: &'a Cell<bool>, evaluations: usize }
+        impl SolutionListener for CancelListener<'_> {
+            fn report(&mut self, _: ReportType, _: &SPSolution, _: &SPInstance) {
+                panic!("intermediate solution published");
+            }
+            fn report_separation_result(&mut self, result: SeparationResult) {
+                self.evaluations += result.total_evals;
+                self.signal.set(true);
+            }
+        }
+        let mut sep = separator(1);
+        let initial = sep.prob.save();
+        let term = Signal(Cell::new(false));
+        let mut listener = CancelListener { signal: &term.0, evaluations: 0 };
+        let result = rearrange(&mut sep, &initial, &mut listener, &term);
+        assert!(term.kill());
+        assert!(listener.evaluations > 0);
+        assert_eq!(result.strip_width(), initial.strip_width());
+        assert!(sep.prob.layout.is_feasible());
+        let before = format!("{:?}", sep.prob.layout.placed_items);
+        rearrange(&mut sep, &result, &mut listener, &term);
+        assert_eq!(format!("{:?}", sep.prob.layout.placed_items), before);
+    }
+
+    #[test]
+    fn minimum_width_ignores_zero_demand_item() {
+        let sep = separator(1);
+        let bound = minimum_strip_width(&sep.prob);
+        assert!(bound > 3.99 && bound <= 4.0, "{bound}");
+    }
 }

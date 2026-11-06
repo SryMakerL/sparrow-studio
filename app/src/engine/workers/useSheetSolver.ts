@@ -1,11 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Job, Result } from '../model';
-import { solveSheets } from '../sheets';
+import { solveSheets, type SheetProgress } from '../sheets';
 import { geometryTask } from './geometryTask';
 import { sheetStripSolver } from './sheetSolver';
 import type { Diagnostics, LiveFrame, RunState } from './useSolver';
 
 export function useSheetSolver() {
+  const [sheetHistory, setSheetHistory] = useState<
+    {
+      sheetIndex: number;
+      insertionFailures: number;
+      reason: NonNullable<SheetProgress['sheetEndReason']>;
+    }[]
+  >([]);
+  const [phaseTrace, setPhaseTrace] = useState<
+    { sheetIndex: number; phase: 'Insertion' | 'Compression'; insertionFailures: number }[]
+  >([]);
+  const lastPhaseTrace = useRef('');
   const [job, setJob] = useState<Job>();
   const [result, setResult] = useState<Result>();
   const [currentResult, setCurrentResult] = useState<Result>();
@@ -13,6 +24,8 @@ export function useSheetSolver() {
     sheetIndex: number;
     phase: 'Insertion' | 'Compression';
     insertionFailures: number;
+    compressionStatus?: SheetProgress['compressionStatus'];
+    sheetEndReason?: SheetProgress['sheetEndReason'];
   }>();
   const [state, setState] = useState<RunState>('Ready');
   const [error, setError] = useState('');
@@ -38,6 +51,9 @@ export function useSheetSolver() {
     setResult(undefined);
     setCurrentResult(undefined);
     setSheetProgress(undefined);
+    setSheetHistory([]);
+    setPhaseTrace([]);
+    lastPhaseTrace.current = '';
     setState('Ready');
     setError('');
     setElapsed(0);
@@ -79,12 +95,36 @@ export function useSheetSolver() {
         return reply.validation;
       },
       onProgress: (progress) => {
-        if (active.current === controller && !controller.signal.aborted)
-          setSheetProgress({
-            sheetIndex: progress.sheetIndex,
-            phase: progress.phase,
-            insertionFailures: progress.insertionFailures,
-          });
+        if (active.current !== controller || controller.signal.aborted) return;
+        setSheetProgress({
+          sheetIndex: progress.sheetIndex,
+          phase: progress.phase,
+          insertionFailures: progress.insertionFailures,
+          compressionStatus: progress.compressionStatus,
+          sheetEndReason: progress.sheetEndReason,
+        });
+        const traceKey = `${progress.sheetIndex}:${progress.phase}:${progress.insertionFailures}`;
+        if (traceKey !== lastPhaseTrace.current) {
+          lastPhaseTrace.current = traceKey;
+          setPhaseTrace((trace) => [
+            ...trace.slice(-19),
+            {
+              sheetIndex: progress.sheetIndex,
+              phase: progress.phase,
+              insertionFailures: progress.insertionFailures,
+            },
+          ]);
+        }
+        if (progress.sheetEndReason) {
+          setSheetHistory((history) => [
+            ...history,
+            {
+              sheetIndex: progress.sheetIndex,
+              insertionFailures: progress.insertionFailures,
+              reason: progress.sheetEndReason!,
+            },
+          ]);
+        }
       },
       onCurrentRound: (next) => {
         if (active.current === controller && !controller.signal.aborted) setCurrentResult(next);
@@ -122,6 +162,8 @@ export function useSheetSolver() {
     result,
     currentResult,
     sheetProgress,
+    sheetHistory,
+    phaseTrace,
     state,
     error,
     elapsed,

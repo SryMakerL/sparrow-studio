@@ -266,7 +266,7 @@ describe('fixed sheet phases', () => {
         return row(child);
       }),
     );
-    expect(compressed).toEqual([2, 2, 2, 1]);
+    expect(compressed).toEqual([2, 2, 2, 2, 1]);
     expect(outcome.reason).toBe('Complete');
     expect(outcome.result.sheets!.map((sheet) => quantity(sheet.job))).toEqual([2, 1]);
     expect(outcome.result.unplaced).toEqual([]);
@@ -275,7 +275,7 @@ describe('fixed sheet phases', () => {
   });
 
   it.each([undefined, 1])(
-    'advances immediately after the configured number of full failed insertions (%s)',
+    'compresses after each failed insertion before retrying (%s)',
     async (limit) => {
       const input = job(3, 2);
       input.settings.sheetLengthMm = 30;
@@ -302,11 +302,14 @@ describe('fixed sheet phases', () => {
         ),
       );
       const failedPass = ['warm:2', 'cold:2'];
+      const limitValue = limit ?? 3;
       expect(calls).toEqual([
         'cold:3',
         'cold:1',
         ...failedPass,
-        ...Array.from({ length: limit ?? 3 }, () => ['compress:1', ...failedPass]).flat(),
+        ...Array.from({ length: limitValue }, () => ['compress:1', ...failedPass]).flat(),
+        'compress:1',
+        ...failedPass,
       ]);
       expect(sheet).toBe(1);
       expect(outcome.result.unplaced).toEqual([{ partId: input.parts[0].id, quantity: 2 }]);
@@ -341,7 +344,7 @@ describe('fixed sheet phases', () => {
         },
       ),
     );
-    expect(counts).toEqual([1, 1, 1, 2, 2, 2]);
+    expect(counts).toEqual([1, 1, 1, 2, 2, 2, 2]);
     expect(outcome.result.sheets![0].job.parts[0].quantity).toBe(2);
     expect(validate(input, outcome.result).status).toBe('passed');
   });
@@ -372,10 +375,54 @@ describe('fixed sheet phases', () => {
         },
       ),
     );
-    expect(compressions).toBe(3);
+    expect(compressions).toBe(4);
     const times = progress.filter((p) => p.sheetIndex === 0).map((p) => p.lastImprovementAt);
-    expect(new Set(times).size).toBe(4);
-    expect(outcome.result.sheets![0].result.usedLengthMm).toBe(11);
+    expect(new Set(times).size).toBe(5);
+    expect(outcome.result.sheets![0].result.usedLengthMm).toBe(10);
+  });
+
+  it('uses validated equal-width rearrangements for insertion without publishing a best improvement', async () => {
+    const input = job(2, 1);
+    input.settings.materialWidthMm = 20;
+    input.settings.sheetLengthMm = 40;
+    input.settings.sheetCompressionSeconds = 1;
+    const controller = new AbortController();
+    const published: string[] = [];
+    const insertionStarts: number[] = [];
+    const accepted = vi.fn();
+    let compressionStarted = 0;
+    const solve: StripAttempt = async (child, _signal, _offer, budget, initial) => {
+      if (quantity(child) > 1) {
+        if (initial?.seed === 'rearranged') {
+          expect(initial.placements[0].yMm).toBe(10);
+          expect(performance.now() - compressionStarted).toBeGreaterThanOrEqual(900);
+          insertionStarts.push(performance.now());
+          controller.abort();
+        }
+        return undefined;
+      }
+      const base = (await row(child))!;
+      if (!initial) return { ...base, seed: 'initial' };
+      compressionStarted = performance.now();
+      await new Promise((resolve) => setTimeout(resolve, budget! - 100));
+      return {
+        ...base,
+        seed: 'rearranged',
+        placements: base.placements.map((placement) => ({ ...placement, yMm: 10 })),
+      };
+    };
+    solve.acceptCandidate = accepted;
+    const pending = solveSheets(input, solve, {
+      signal: controller.signal,
+      onSheet: (result) => published.push(result.sheets![0].result.seed),
+    });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(insertionStarts).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(300);
+    await pending;
+    expect(insertionStarts).toHaveLength(1);
+    expect(published).toEqual(['initial']);
+    expect(accepted.mock.calls.map(([result]) => result.seed)).toEqual(['initial', 'rearranged']);
   });
 
   it('probes an impossible initial selection finitely and immediately moves to the next sheet', async () => {

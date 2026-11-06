@@ -1,7 +1,7 @@
 use crate::config::ExplorationConfig;
 use crate::optimizer::separator::{Separator, SeparatorConfig};
-use crate::sample::uniform_sampler::convert_sample_to_closest_feasible;
-use crate::util::listener::{ReportType, SolutionListener};
+use crate::sample::uniform_sampler::{convert_sample_to_closest_feasible, UniformBBoxSampler};
+use crate::util::listener::{ReportType, SeparationProgress, SeparationResult, SolutionListener};
 use crate::util::terminator::Terminator;
 use crate::FMT;
 use float_cmp::approx_eq;
@@ -89,6 +89,69 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
     info!("[EXPL] finished, best feasible solution: width: {:.3} ({:.3}%)",best_width,feasible_sols.last().unwrap().density(instance) * 100.0);
 
     feasible_sols
+}
+
+/// Search for alternative feasible placements without changing the strip width.
+/// The initial solution must be feasible and have the separator's current width.
+/// Intermediate layouts are private; callers publish the returned fallback or result.
+pub fn rearrange(
+    sep: &mut Separator,
+    initial: &SPSolution,
+    sol_listener: &mut impl SolutionListener,
+    term: &impl Terminator,
+) -> SPSolution {
+    struct SearchListener<'a, L>(&'a mut L);
+    impl<L: SolutionListener> SolutionListener for SearchListener<'_, L> {
+        fn report(&mut self, _: ReportType, _: &SPSolution, _: &SPInstance) {}
+
+        fn report_separation_progress(&mut self, progress: SeparationProgress) {
+            self.0.report_separation_progress(progress);
+        }
+
+        fn report_separation_result(&mut self, result: SeparationResult) {
+            self.0.report_separation_result(result);
+        }
+    }
+
+    let mut best = initial.clone();
+    let config = sep.config;
+    // Keep each attempt short so termination is checked between actual searches.
+    sep.config.iter_no_imprv_limit = 1;
+    sep.config.strike_limit = 1;
+    let mut listener = SearchListener(sol_listener);
+    while !term.kill() {
+        sep.rollback(&best, None);
+        let Some((pk, pi)) = sep.prob.layout.placed_items.iter().choose(&mut sep.rng) else {
+            break;
+        };
+        let item = sep.prob.instance.item(pi.item_id);
+        let container = sep.prob.layout.container.outer_cd.bbox;
+        let dt = UniformBBoxSampler::new(container, item, container)
+            .map_or(pi.d_transf, |sampler| sampler.sample(&mut sep.rng));
+        let pk = sep.move_item(pk, dt);
+        if sep.ct.get_total_loss() == 0.0 {
+            // Feasible sampling alone gives the worker nothing to search, notably
+            // for a single item or identical items. Cross the left boundary by a
+            // fraction of this item's width, leaving it overlapping the container.
+            let pi = &sep.prob.layout.placed_items[pk];
+            let dx = container.x_min - pi.shape.bbox.x_min - pi.shape.bbox.width() * 0.1;
+            let dt = pi.d_transf.compose().translate((dx, 0.0)).decompose();
+            sep.move_item(pk, dt);
+        }
+        if term.kill() {
+            break;
+        }
+        let (solution, tracker) = sep.separate(term, &mut listener);
+        if tracker.get_total_loss() == 0.0 && solution.strip_width() == initial.strip_width() {
+            sep.rollback(&solution, Some(&tracker));
+            if sep.prob.layout.is_feasible() {
+                best = solution;
+            }
+        }
+    }
+    sep.config = config;
+    sep.rollback(&best, None);
+    best
 }
 
 fn disrupt_solution(sep: &mut Separator, config: &ExplorationConfig) {

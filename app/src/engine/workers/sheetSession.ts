@@ -145,7 +145,16 @@ export class SheetWorkerSession {
           },
         };
         if (!this.snapshots.has(key(result))) this.snapshots.set(key(result), data.snapshotId);
-        if (!pending.best || result.usedLengthMm < pending.best.usedLengthMm) pending.best = result;
+        const compressing =
+          !!pending.initial &&
+          pending.initial.placements.length ===
+            pending.job.parts.reduce((sum, part) => sum + part.quantity, 0);
+        if (
+          !pending.best ||
+          result.usedLengthMm < pending.best.usedLengthMm ||
+          (compressing && result.usedLengthMm === pending.best.usedLengthMm)
+        )
+          pending.best = result;
         pending.offer?.(result);
       }
       if (data.type === 'finished') pending.finish();
@@ -172,6 +181,7 @@ export class SheetWorkerSession {
     offer?: (result: Result) => void,
     budgetMs = 2500,
     initial?: Result,
+    onStarted?: (started: boolean) => void,
   ): Promise<Result | undefined> {
     if (signal?.aborted) return;
     await this.idle;
@@ -234,6 +244,7 @@ export class SheetWorkerSession {
       this.pending = { id, seed, job, initial, offer, finish };
       signal?.addEventListener('abort', abort, { once: true });
       const quantities = new Map(job.parts.map((part) => [part.id, part.quantity]));
+      onStarted?.(true);
       this.worker!.postMessage({
         type: 'session-step',
         runId: 1,

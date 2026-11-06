@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { Fragment, useMemo, useRef, useState } from 'react';
 import { netArea, worldParts } from '../../engine/geometry/validate';
 import type { Job } from '../../engine/model';
 import type { DisplayUnit } from '../../engine/units';
@@ -12,12 +12,21 @@ import { rulerStep } from '../rulers';
 import { sheetStack } from './sheetStack';
 import { LayoutDrawing } from './LayoutDrawing';
 
+const sheetEndLabel = {
+  'failure-limit': 'failure limit reached',
+  'no-remaining-parts': 'no parts left to insert',
+  'all-parts-placed': 'all parts placed',
+  'initial-placement-failed': 'initial placement failed',
+  stopped: 'stopped',
+};
+
 export function LiveView() {
   const { solver, runJob, unit, running, project, setTab } = useStudio();
   const [mode, setMode] = useState<'live' | 'best'>('live');
   const batch = !!runJob?.settings.sheetCount;
   const currentResult = batch ? solver.currentResult : solver.result;
   const completed = currentResult?.sheets;
+  const sheetHistory = solver.sheetHistory ?? [];
   const lastSheet = completed?.at(-1);
   const best = batch ? lastSheet?.result : solver.result;
   const displayJob = batch ? lastSheet?.job : runJob;
@@ -94,16 +103,43 @@ export function LiveView() {
                   ? `${completed?.length ?? 0} sheets processed · ${currentResult?.unplaced?.reduce((sum, part) => sum + part.quantity, 0) ?? copyCount(runJob?.parts ?? [])} parts remaining.`
                   : 'Of the best valid layout so far.'}
               </span>
-              {batch && running && solver.sheetProgress && (
+              {batch && (running || sheetHistory.length > 0) && (
                 <dl className="facts">
-                  <dt>Current stage</dt>
-                  <dd>{solver.sheetProgress.phase}</dd>
-                  <dt>Current sheet</dt>
-                  <dd>{solver.sheetProgress.sheetIndex + 1}</dd>
-                  <dt>Insertion failures</dt>
-                  <dd>
-                    {solver.sheetProgress.insertionFailures} / {runJob?.settings.sheetInsertionFailures ?? 3}
-                  </dd>
+                  {running && solver.sheetProgress && (
+                    <>
+                      <dt>Current stage</dt>
+                      <dd>
+                        {solver.sheetProgress.sheetEndReason
+                          ? 'Sheet complete'
+                          : solver.sheetProgress.phase}
+                      </dd>
+                      <dt>Current sheet</dt>
+                      <dd>{solver.sheetProgress.sheetIndex + 1}</dd>
+                      <dt>Insertion failures</dt>
+                      <dd>
+                        {solver.sheetProgress.insertionFailures} /{' '}
+                        {runJob?.settings.sheetInsertionFailures ?? 3}
+                      </dd>
+                      {solver.sheetProgress.compressionStatus && (
+                        <>
+                          <dt>Compression attempt</dt>
+                          <dd>
+                            {solver.sheetProgress.compressionStatus === 'running'
+                              ? 'Started'
+                              : 'Skipped: less than 50 ms left'}
+                          </dd>
+                        </>
+                      )}
+                    </>
+                  )}
+                  {sheetHistory.map((entry) => (
+                    <Fragment key={`${entry.sheetIndex}-${sheetHistory.indexOf(entry)}`}>
+                      <dt>Sheet {entry.sheetIndex + 1} ended</dt>
+                      <dd>
+                        {entry.insertionFailures} failures · {sheetEndLabel[entry.reason]}
+                      </dd>
+                    </Fragment>
+                  ))}
                 </dl>
               )}
               <div className="stack">

@@ -19,6 +19,7 @@ export type StripAttempt = ((
   onCandidate?: (result: Result) => void,
   attemptBudgetMs?: number,
   initialPlacement?: Result,
+  onStarted?: (started: boolean) => void,
 ) => Promise<Result | undefined>) & {
   beginSheet?: (catalog: Job, signal?: AbortSignal) => void | Promise<void>;
   endSheet?: () => void;
@@ -32,6 +33,13 @@ export type SheetProgress = {
   lastImprovementAt: number;
   phase: 'Insertion' | 'Compression';
   insertionFailures: number;
+  compressionStatus?: 'running' | 'skipped-budget';
+  sheetEndReason?:
+    | 'failure-limit'
+    | 'no-remaining-parts'
+    | 'all-parts-placed'
+    | 'initial-placement-failed'
+    | 'stopped';
 };
 
 type SheetOptions = {
@@ -163,10 +171,11 @@ export async function solveSheets(
             onCandidate?: (result: Result) => void,
             attemptBudgetMs?: number,
             initialPlacement?: Result,
+            onStarted?: (started: boolean) => void,
           ) => {
             if (expired()) return undefined;
             return untilAbort(
-              solve(child, signal, onCandidate, attemptBudgetMs, initialPlacement),
+              solve(child, signal, onCandidate, attemptBudgetMs, initialPlacement, onStarted),
               signal,
             );
           },
@@ -300,10 +309,12 @@ async function solveSheetRound(
   };
   publishCurrent();
   let observe: ((entry: SheetEntry) => boolean) | undefined;
+  let observeWorking: ((entry: SheetEntry) => boolean) | undefined;
   const attempt = async (
     ids: string[],
     mode: 'search' | 'compress' = 'search',
     initialPlacement?: Result,
+    onStarted?: (started: boolean) => void,
   ): Promise<SheetEntry | undefined> => {
     if (stopped()) return;
     const remainingMs = (options.deadline ?? Infinity) - performance.now();
@@ -366,7 +377,12 @@ async function solveSheetRound(
           : validate(child, result);
         if (!active || attemptStopped()) return;
         if (validation.status !== 'passed') continue;
-        if (verified && verified.result.usedLengthMm <= result.usedLengthMm) continue;
+        if (
+          verified &&
+          (verified.result.usedLengthMm < result.usedLengthMm ||
+            (mode === 'search' && verified.result.usedLengthMm === result.usedLengthMm))
+        )
+          continue;
         verified = { job: child, result: { ...result, validation } };
         successful.set(key, structuredClone(verified));
         if (observe?.(verified)) {
@@ -374,6 +390,8 @@ async function solveSheetRound(
           const snapshot = aggregate(verified);
           publishCurrent(snapshot);
           options.onSheet?.(snapshot);
+        } else if (mode === 'compress' && observeWorking?.(verified)) {
+          solve.acceptCandidate?.(verified.result);
         }
         if (mode === 'search') stopSolver();
       }
@@ -403,11 +421,16 @@ async function solveSheetRound(
       latest = structuredClone(result);
       pump();
     };
+    let startReported = false;
     try {
       const result = await untilAbort(
-        solve(child, solverController.signal, offer, budget, initialPlacement),
+        solve(child, solverController.signal, offer, budget, initialPlacement, (started) => {
+          startReported = true;
+          if (mode === 'compress') onStarted?.(started);
+        }),
         solverController.signal,
       );
+      if (mode === 'compress' && !startReported) onStarted?.(false);
       if (result) offer(result);
       while (checking && !attemptStopped()) await untilAbort(checking, attemptController.signal);
       if (failure) throw failure;
@@ -456,8 +479,11 @@ async function solveSheetRound(
     if (sheetIndex > 0) publishCurrent();
     let lastImprovementAt = performance.now();
     let best: SheetEntry | undefined;
+    let working: SheetEntry | undefined;
     let selected: string[] = [];
     let insertionFailures = 0;
+    let sheetEndReason: SheetProgress['sheetEndReason'];
+    let compressionStatus: SheetProgress['compressionStatus'];
     let phase: SheetProgress['phase'] = 'Insertion';
     const progress = () =>
       options.onProgress?.({
@@ -466,6 +492,8 @@ async function solveSheetRound(
         lastImprovementAt,
         phase,
         insertionFailures,
+        compressionStatus,
+        sheetEndReason,
       });
     progress();
     observe = (entry) => {
@@ -483,6 +511,7 @@ async function solveSheetRound(
         (different < 0 && entry.result.usedLengthMm < best.result.usedLengthMm)
       ) {
         best = entry;
+        working = entry;
         selected = ids;
         lastImprovementAt = performance.now();
         progress();
@@ -490,18 +519,40 @@ async function solveSheetRound(
       }
       return false;
     };
+    observeWorking = (entry) => {
+      if (
+        !working ||
+        entry.result.usedLengthMm > working.result.usedLengthMm ||
+        JSON.stringify(entry.result.placements) === JSON.stringify(working.result.placements)
+      )
+        return false;
+      working = entry;
+      return true;
+    };
     const pool = ordered.flatMap((p) => Array.from({ length: remaining.get(p.id)! }, () => p.id));
-    if (!pool.length) break;
+    if (!pool.length) {
+      sheetEndReason = 'no-remaining-parts';
+      progress();
+      break;
+    }
     let initialPass = true;
     while (!stopped()) {
       if (!initialPass && best) {
         phase = 'Compression';
+        compressionStatus = undefined;
         progress();
         successful.clear();
-        await attempt([...selected], 'compress', best.result);
+        await attempt([...selected], 'compress', working!.result, (started) => {
+          compressionStatus = started ? 'running' : 'skipped-budget';
+          progress();
+        });
         if (stopped()) break;
+        compressionStatus = undefined;
         if (selected.length === pool.length) {
-          if (sheets.length > 0) break;
+          if (sheets.length > 0) {
+            sheetEndReason = 'all-parts-placed';
+            break;
+          }
           await untilAbort(
             new Promise<void>((resolve) =>
               setTimeout(
@@ -554,7 +605,7 @@ async function solveSheetRound(
             const batch = Math.min(high, low + step);
             const before = [...selected];
             const ids = [...before, ...Array<string>(batch - low).fill(id)];
-            const trial = (await attempt(ids, 'search', best?.result)) ?? (await attempt(ids));
+            const trial = (await attempt(ids, 'search', working?.result)) ?? (await attempt(ids));
             if (trial) {
               filledArea += (batch - low) * itemArea;
               low = batch;
@@ -571,13 +622,24 @@ async function solveSheetRound(
       } else {
         insertionFailures = selected.length > beforeInsertion ? 0 : insertionFailures + 1;
         progress();
-        if (insertionFailures >= insertionFailureLimit) break;
+        if (insertionFailures > insertionFailureLimit) {
+          sheetEndReason = 'failure-limit';
+          break;
+        }
       }
-      if (!best) break;
+      if (!best) {
+        sheetEndReason = stopped() ? 'stopped' : 'initial-placement-failed';
+        break;
+      }
       await untilAbort(new Promise<void>((resolve) => setTimeout(resolve, 0)), signal);
     }
+    if (stopped()) sheetEndReason = 'stopped';
+    else if ([...remaining.values()].every((quantity) => quantity <= 0))
+      sheetEndReason = 'all-parts-placed';
+    if (sheetEndReason) progress();
     solve.endSheet?.();
     observe = undefined;
+    observeWorking = undefined;
     if (!best) failedStocks.set(stock.id, (failedStocks.get(stock.id) ?? 0) + 1);
     else failedStocks.delete(stock.id);
     if (best) {

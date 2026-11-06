@@ -83,6 +83,57 @@ it('reuses one worker and selects only validated internal snapshots across attem
   session.close();
 });
 
+it('returns and retains the last equal-width rearrangement for the next warm insertion', async () => {
+  const steps: Record<string, unknown>[] = [];
+  class MockWorker {
+    onmessage?: (event: { data: unknown }) => void;
+    postMessage(message: Record<string, unknown>) {
+      if (message.type === 'session-init')
+        queueMicrotask(() => this.send({ type: 'session-ready' }));
+      if (message.type !== 'session-step') return;
+      steps.push(message);
+      queueMicrotask(() => {
+        for (const [snapshotId, y] of steps.length === 2
+          ? [
+              [20, 0],
+              [21, 20],
+            ]
+          : [[10, 0]]) {
+          this.send({
+            type: 'candidate',
+            attemptId: message.attemptId,
+            snapshotId,
+            solution: {
+              strip_width: 10,
+              layout: {
+                placed_items: [
+                  { item_id: 0, transformation: { rotation: 0, translation: [0, y] } },
+                ],
+              },
+            },
+          });
+        }
+        this.send({ type: 'finished', attemptId: message.attemptId });
+      });
+    }
+    send(data: Record<string, unknown>) {
+      this.onmessage?.({ data: { ...data, runId: 1, documentRevision: 7 } });
+    }
+  }
+  vi.stubGlobal('Worker', MockWorker);
+  const job = catalog();
+  const session = new SheetWorkerSession(job, 7);
+  const initial = (await session.attempt(job))!;
+  session.accept(initial);
+  const rearranged = (await session.attempt(job, undefined, undefined, 1000, initial))!;
+  expect(rearranged.placements[0].yMm).toBe(20);
+  session.accept(rearranged);
+  const insertionJob = { ...job, parts: job.parts.map((part) => ({ ...part, quantity: 2 })) };
+  await session.attempt(insertionJob, undefined, undefined, 1000, rearranged);
+  expect(steps[2]).toMatchObject({ initialSnapshot: 21, retainSnapshot: 21, mode: 'search' });
+  session.close();
+});
+
 it('hard-stops a stuck session and reinitializes without stale snapshot IDs', async () => {
   vi.useFakeTimers();
   const posted: Record<string, unknown>[] = [];
@@ -131,7 +182,12 @@ it.each([30_000, Infinity])(
         if (message.type === 'session-cancel')
           queueMicrotask(() =>
             this.onmessage?.({
-              data: { type: 'finished', runId: 1, documentRevision: 1, attemptId: message.attemptId },
+              data: {
+                type: 'finished',
+                runId: 1,
+                documentRevision: 1,
+                attemptId: message.attemptId,
+              },
             }),
           );
       }
