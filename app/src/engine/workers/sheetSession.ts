@@ -145,7 +145,16 @@ export class SheetWorkerSession {
           },
         };
         if (!this.snapshots.has(key(result))) this.snapshots.set(key(result), data.snapshotId);
-        if (!pending.best || result.usedLengthMm < pending.best.usedLengthMm) pending.best = result;
+        const compressing =
+          !!pending.initial &&
+          pending.initial.placements.length ===
+            pending.job.parts.reduce((sum, part) => sum + part.quantity, 0);
+        if (
+          !pending.best ||
+          result.usedLengthMm < pending.best.usedLengthMm ||
+          (compressing && result.usedLengthMm === pending.best.usedLengthMm)
+        )
+          pending.best = result;
         pending.offer?.(result);
       }
       if (data.type === 'finished') pending.finish();

@@ -74,6 +74,16 @@ export function parseProject(value: unknown): ProjectDocument {
     (sheetCompressionSeconds as number) > 600
   )
     return fail('invalid sheet compression duration.');
+  const sheetInsertionWarmStartSeconds =
+    settings.sheetInsertionWarmStartSeconds === undefined
+      ? 10
+      : settings.sheetInsertionWarmStartSeconds;
+  if (
+    !Number.isInteger(sheetInsertionWarmStartSeconds) ||
+    (sheetInsertionWarmStartSeconds as number) < 1 ||
+    (sheetInsertionWarmStartSeconds as number) > 600
+  )
+    return fail('invalid sheet insertion warm-start duration.');
   const sheetInsertionFailures =
     settings.sheetInsertionFailures === undefined ? 3 : settings.sheetInsertionFailures;
   if (
@@ -126,6 +136,7 @@ export function parseProject(value: unknown): ProjectDocument {
     settings: {
       ...project.settings,
       sheetCompressionSeconds: sheetCompressionSeconds as number,
+      sheetInsertionWarmStartSeconds: sheetInsertionWarmStartSeconds as number,
       sheetInsertionFailures: sheetInsertionFailures as number,
     },
     parts,

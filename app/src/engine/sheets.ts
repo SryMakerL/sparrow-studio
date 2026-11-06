@@ -254,6 +254,7 @@ async function solveSheetRound(
   let length = stock.lengthMm;
   const count = stocks.length;
   const compressionMs = (job.settings.sheetCompressionSeconds ?? 10) * 1000;
+  const insertionWarmStartMs = (job.settings.sheetInsertionWarmStartSeconds ?? 10) * 1000;
   const insertionFailureLimit = job.settings.sheetInsertionFailures ?? 3;
   const started = performance.now(),
     sheets: SheetEntry[] = [];
@@ -300,6 +301,7 @@ async function solveSheetRound(
   };
   publishCurrent();
   let observe: ((entry: SheetEntry) => boolean) | undefined;
+  let observeWorking: ((entry: SheetEntry) => boolean) | undefined;
   const attempt = async (
     ids: string[],
     mode: 'search' | 'compress' = 'search',
@@ -310,7 +312,10 @@ async function solveSheetRound(
     const adding = !!initialPlacement && ids.length > initialPlacement.placements.length;
     const budget = Math.max(
       0,
-      Math.min(mode === 'compress' ? compressionMs : adding ? 10_000 : 2500, remainingMs),
+      Math.min(
+        mode === 'compress' ? compressionMs : adding ? insertionWarmStartMs : 2500,
+        remainingMs,
+      ),
     );
     const quantities = new Map<string, number>();
     ids.forEach((id) => quantities.set(id, (quantities.get(id) ?? 0) + 1));
@@ -366,7 +371,12 @@ async function solveSheetRound(
           : validate(child, result);
         if (!active || attemptStopped()) return;
         if (validation.status !== 'passed') continue;
-        if (verified && verified.result.usedLengthMm <= result.usedLengthMm) continue;
+        if (
+          verified &&
+          (verified.result.usedLengthMm < result.usedLengthMm ||
+            (mode === 'search' && verified.result.usedLengthMm === result.usedLengthMm))
+        )
+          continue;
         verified = { job: child, result: { ...result, validation } };
         successful.set(key, structuredClone(verified));
         if (observe?.(verified)) {
@@ -374,6 +384,8 @@ async function solveSheetRound(
           const snapshot = aggregate(verified);
           publishCurrent(snapshot);
           options.onSheet?.(snapshot);
+        } else if (mode === 'compress' && observeWorking?.(verified)) {
+          solve.acceptCandidate?.(verified.result);
         }
         if (mode === 'search') stopSolver();
       }
@@ -456,8 +468,11 @@ async function solveSheetRound(
     if (sheetIndex > 0) publishCurrent();
     let lastImprovementAt = performance.now();
     let best: SheetEntry | undefined;
+    let working: SheetEntry | undefined;
     let selected: string[] = [];
     let insertionFailures = 0;
+    let insertionPass = 0;
+    let previousFailed = new Set<string>();
     let phase: SheetProgress['phase'] = 'Insertion';
     const progress = () =>
       options.onProgress?.({
@@ -483,12 +498,23 @@ async function solveSheetRound(
         (different < 0 && entry.result.usedLengthMm < best.result.usedLengthMm)
       ) {
         best = entry;
+        working = entry;
         selected = ids;
         lastImprovementAt = performance.now();
         progress();
         return true;
       }
       return false;
+    };
+    observeWorking = (entry) => {
+      if (
+        !working ||
+        entry.result.usedLengthMm > working.result.usedLengthMm ||
+        JSON.stringify(entry.result.placements) === JSON.stringify(working.result.placements)
+      )
+        return false;
+      working = entry;
+      return true;
     };
     const pool = ordered.flatMap((p) => Array.from({ length: remaining.get(p.id)! }, () => p.id));
     if (!pool.length) break;
@@ -498,7 +524,7 @@ async function solveSheetRound(
         phase = 'Compression';
         progress();
         successful.clear();
-        await attempt([...selected], 'compress', best.result);
+        await attempt([...selected], 'compress', working!.result);
         if (stopped()) break;
         if (selected.length === pool.length) {
           if (sheets.length > 0) break;
@@ -542,7 +568,20 @@ async function solveSheetRound(
         const available = [...pool];
         selected.forEach((id) => available.splice(available.indexOf(id), 1));
         let filledArea = selected.reduce((sum, id) => sum + areas.get(id)!, 0);
-        for (const id of new Set(available)) {
+        const availableIds = [...new Set(available)];
+        const candidates = priorityLevels.flatMap((priority) => {
+          const group = availableIds.filter(
+            (id) => job.parts.find((part) => part.id === id)!.priority === priority,
+          );
+          if (!group.length) return group;
+          const offset = insertionPass % group.length;
+          const rotated = [...group.slice(offset), ...group.slice(0, offset)];
+          return rotated.sort(
+            (a, b) => Number(previousFailed.has(a)) - Number(previousFailed.has(b)),
+          );
+        });
+        const failed = new Set<string>();
+        for (const id of candidates) {
           const itemArea = areas.get(id)!;
           let low = 0;
           let high = Math.min(
@@ -554,17 +593,20 @@ async function solveSheetRound(
             const batch = Math.min(high, low + step);
             const before = [...selected];
             const ids = [...before, ...Array<string>(batch - low).fill(id)];
-            const trial = (await attempt(ids, 'search', best?.result)) ?? (await attempt(ids));
+            const trial = (await attempt(ids, 'search', working?.result)) ?? (await attempt(ids));
             if (trial) {
               filledArea += (batch - low) * itemArea;
               low = batch;
               step *= 2;
             } else {
+              if (!stopped()) failed.add(id);
               high = batch - 1;
               step = Math.max(1, Math.floor(step / 2));
             }
           }
         }
+        previousFailed = failed;
+        insertionPass++;
       }
       if (initialPass) {
         initialPass = false;
@@ -578,6 +620,7 @@ async function solveSheetRound(
     }
     solve.endSheet?.();
     observe = undefined;
+    observeWorking = undefined;
     if (!best) failedStocks.set(stock.id, (failedStocks.get(stock.id) ?? 0) + 1);
     else failedStocks.delete(stock.id);
     if (best) {
