@@ -204,6 +204,14 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
     sheetCompressionSeconds > 600
   )
     throw Error('Sheet compression duration must be a whole number from 1 to 600 seconds.');
+  const sheetInsertionWarmStartSeconds =
+    s.sheetInsertionWarmStartSeconds === undefined ? 10 : s.sheetInsertionWarmStartSeconds;
+  if (
+    !Number.isInteger(sheetInsertionWarmStartSeconds) ||
+    sheetInsertionWarmStartSeconds < 1 ||
+    sheetInsertionWarmStartSeconds > 600
+  )
+    throw Error('Sheet insertion warm-start duration must be a whole number from 1 to 600 seconds.');
   const sheetInsertionFailures =
     s.sheetInsertionFailures === undefined ? 3 : s.sheetInsertionFailures;
   if (
@@ -224,7 +232,14 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
     throw Error('Sheet snapshot dimensions differ from job.');
   return {
     ...doc,
-    settings: { ...s, sheetStocks, sheetStock, sheetCompressionSeconds, sheetInsertionFailures },
+    settings: {
+      ...s,
+      sheetStocks,
+      sheetStock,
+      sheetCompressionSeconds,
+      sheetInsertionWarmStartSeconds,
+      sheetInsertionFailures,
+    },
     parts,
   };
 }

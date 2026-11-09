@@ -91,6 +91,19 @@ export function SettingsView() {
                             }
                           />
                           <SheetSettingInput
+                            label="Insertion attempt (seconds)"
+                            value={settings.sheetInsertionWarmStartSeconds}
+                            max={600}
+                            defaultValue={10}
+                            onChange={(sheetInsertionWarmStartSeconds) =>
+                              update({ sheetInsertionWarmStartSeconds })
+                            }
+                          />
+                          <p className="muted">
+                            Budget for each warm-start insertion attempt. Cold fallback still uses
+                            2.5 seconds. The total time limit takes priority.
+                          </p>
+                          <SheetSettingInput
                             label="Consecutive insertion failures before changing sheets"
                             value={settings.sheetInsertionFailures}
                             max={100}

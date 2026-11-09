@@ -87,13 +87,19 @@ describe('project document', () => {
 
   it('defaults missing sheet controls independently and ignores the legacy timeout', () => {
     const project = addParts(newProject('Job'), [square(10)]);
-    const { sheetCompressionSeconds: _, sheetInsertionFailures: __, ...legacy } = project.settings;
+    const {
+      sheetCompressionSeconds: _,
+      sheetInsertionWarmStartSeconds: _warmStart,
+      sheetInsertionFailures: __,
+      ...legacy
+    } = project.settings;
     for (const sheetStagnationSeconds of [undefined, 15, 45, -1]) {
       const parsed = parseProject({
         ...project,
         settings: { ...legacy, sheetStagnationSeconds },
       });
       expect(parsed.settings.sheetCompressionSeconds).toBe(10);
+      expect(parsed.settings.sheetInsertionWarmStartSeconds).toBe(10);
       expect(parsed.settings.sheetInsertionFailures).toBe(3);
     }
     expect(
@@ -104,9 +110,22 @@ describe('project document', () => {
       parseProject({ ...project, settings: { ...legacy, sheetInsertionFailures: 8 } }).settings
         .sheetCompressionSeconds,
     ).toBe(10);
+    for (const field of [
+      'sheetCompressionSeconds',
+      'sheetInsertionWarmStartSeconds',
+      'sheetInsertionFailures',
+    ] as const) {
+      const settings = { ...project.settings, sheetInsertionWarmStartSeconds: 42 };
+      const { [field]: _missing, ...missing } = settings;
+      const parsed = parseProject({ ...project, settings: missing });
+      expect(parsed.settings.sheetInsertionWarmStartSeconds).toBe(
+        field === 'sheetInsertionWarmStartSeconds' ? 10 : 42,
+      );
+    }
     const job = projectJob(project);
     const {
       sheetCompressionSeconds: _seconds,
+      sheetInsertionWarmStartSeconds: _warmStartSeconds,
       sheetInsertionFailures: _failures,
       ...settings
     } = job.settings;
@@ -115,11 +134,13 @@ describe('project document', () => {
       settings: { ...settings, sheetStagnationSeconds: 15 },
     } as typeof job);
     expect(normalized.settings.sheetCompressionSeconds).toBe(10);
+    expect(normalized.settings.sheetInsertionWarmStartSeconds).toBe(10);
     expect(normalized.settings.sheetInsertionFailures).toBe(3);
   });
 
   it.each([
     ['sheetCompressionSeconds', 1, 600],
+    ['sheetInsertionWarmStartSeconds', 1, 600],
     ['sheetInsertionFailures', 1, 100],
   ] as const)('validates %s in files, solver jobs and start blockers', (field, min, max) => {
     const project = addParts(newProject('Job'), [square(10)]);
@@ -140,16 +161,20 @@ describe('project document', () => {
     }
   });
 
-  it('round-trips non-default sheet controls and passes both to the solver', () => {
+  it('round-trips non-default sheet controls and passes them to the solver without changing the job key', () => {
     const project = addParts(newProject('Job'), [square(10)]);
+    const key = jobKey(projectJob(project));
     project.settings.sheetCompressionSeconds = 24;
+    project.settings.sheetInsertionWarmStartSeconds = 37;
     project.settings.sheetInsertionFailures = 7;
     const parsed = parseProject(JSON.parse(serializeProject(project)));
     expect(parsed).toEqual(project);
     expect(projectJob(parsed).settings).toMatchObject({
       sheetCompressionSeconds: 24,
+      sheetInsertionWarmStartSeconds: 37,
       sheetInsertionFailures: 7,
     });
+    expect(jobKey(projectJob(parsed))).toBe(key);
   });
 
   it('rejects other formats and versions', () => {

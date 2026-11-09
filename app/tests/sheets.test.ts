@@ -317,6 +317,58 @@ describe('fixed sheet phases', () => {
     },
   );
 
+  it.each([
+    { priorities: [0, 0, 0], expected: ['ABC', 'BCA', 'CAB', 'ABC'] },
+    { priorities: [2, 0, 0], expected: ['ABC', 'ACB', 'ABC', 'ACB'] },
+  ])(
+    'rotates failed candidates only within equal priorities ($priorities)',
+    async ({ priorities, expected }) => {
+      const input = job(1, 2);
+      const seed = { ...part(10, 1), id: 'seed', priority: 10 };
+      const extra = [9, 8, 7].map((size, index) => ({
+        ...part(size, 1),
+        id: 'ABC'[index],
+        priority: priorities[index],
+      }));
+      input.parts = [seed, ...extra];
+      input.settings.sheetLengthMm = 100;
+      const controller = new AbortController();
+      const passes: string[][] = [[]];
+      const retries: string[] = [];
+      let pendingFallback: string | undefined;
+      const outcome = await finish(
+        solveSheets(
+          input,
+          async (child, _signal, _offer, _budget, initial) => {
+            if (quantity(child) === 1 && child.parts[0].id === seed.id) {
+              if (initial) passes.push([]);
+              return row(child);
+            }
+            const id = child.parts.find((part) => part.id !== seed.id)!.id;
+            if (initial) {
+              passes.at(-1)!.push(id);
+              pendingFallback = id;
+            } else if (pendingFallback) {
+              expect(id).toBe(pendingFallback);
+              retries.push(id);
+              pendingFallback = undefined;
+            }
+            return undefined;
+          },
+          {
+            signal: controller.signal,
+            onProgress: (progress) => {
+              if (progress.sheetIndex === 1) controller.abort();
+            },
+          },
+        ),
+      );
+      expect(passes.map((pass) => pass.join(''))).toEqual(expected);
+      expect(retries.join('')).toBe(expected.join(''));
+      expect(outcome.result.sheets![0].job.parts.map((part) => part.id)).toEqual(['seed']);
+    },
+  );
+
   it('resets insertion failures only when an insertion adds copies', async () => {
     const input = job(4, 2);
     input.settings.sheetLengthMm = 40;
@@ -425,6 +477,53 @@ describe('fixed sheet phases', () => {
     expect(accepted.mock.calls.map(([result]) => result.seed)).toEqual(['initial', 'rearranged']);
   });
 
+  it('uses the last validated equal-width compressed layout for the next warm insertion', async () => {
+    const input = job(2, 1);
+    input.settings.materialWidthMm = 20;
+    input.settings.sheetLengthMm = 30;
+    const controller = new AbortController();
+    const published: string[] = [];
+    const accepted = vi.fn();
+    let compressed = false;
+    let warmStart: Result | undefined;
+    const solve: StripAttempt = async (child, _signal, offer, _budget, initial) => {
+      if (quantity(child) > 1) {
+        if (compressed && initial) {
+          warmStart = structuredClone(initial);
+          controller.abort();
+        }
+        return undefined;
+      }
+      const base = (await row(child))!;
+      if (!initial) return { ...base, seed: 'initial' };
+      compressed = true;
+      const earlier = {
+        ...base,
+        seed: 'earlier',
+        placements: base.placements.map((p) => ({ ...p, yMm: 1 })),
+      };
+      const latest = {
+        ...base,
+        seed: 'latest',
+        placements: base.placements.map((p) => ({ ...p, yMm: 5 })),
+      };
+      offer?.(earlier);
+      await Promise.resolve();
+      offer?.(latest);
+      return latest;
+    };
+    solve.acceptCandidate = accepted;
+    const pending = solveSheets(input, solve, {
+      signal: controller.signal,
+      onSheet: (result) => published.push(result.sheets![0].result.seed),
+    });
+    await finish(pending);
+    expect(warmStart?.seed).toBe('latest');
+    expect(warmStart?.placements[0].yMm).toBe(5);
+    expect(published).toEqual(['initial']);
+    expect(accepted.mock.calls.some(([result]) => result.seed === 'latest')).toBe(true);
+  });
+
   it('probes an impossible initial selection finitely and immediately moves to the next sheet', async () => {
     const controller = new AbortController();
     const calls: number[] = [];
@@ -456,6 +555,7 @@ describe('fixed sheet phases', () => {
     async (warmSucceeds) => {
       const input = job(3, 1);
       input.settings.sheetLengthMm = 40;
+      input.settings.sheetInsertionWarmStartSeconds = 30;
       const controller = new AbortController();
       let compressed = false;
       const warm: number[] = [];
@@ -472,7 +572,7 @@ describe('fixed sheet phases', () => {
             }
             if (n > 1 && !compressed) return undefined;
             if (initial) {
-              expect(budget).toBe(10_000);
+              expect(budget).toBe(30_000);
               if (initial.placements.length === 1) expect(initial.seed).toBe('compressed');
               warm.push(n);
               if (!warmSucceeds) return undefined;
@@ -615,6 +715,71 @@ describe('fixed budgets, cancellation and independent validation', () => {
     expect(outcome.result.unplaced).toEqual([]);
     await vi.advanceTimersByTimeAsync(5000);
     expect(budgets).toHaveLength(2);
+  });
+
+  it('cancels a hung warm insertion at its configured per-attempt deadline', async () => {
+    const input = job(2, 1);
+    input.settings.sheetLengthMm = 30;
+    input.settings.sheetInsertionWarmStartSeconds = 2;
+    const controller = new AbortController();
+    let warmSignal: AbortSignal | undefined;
+    let coldRetries = 0;
+    const pending = solveSheets(
+      input,
+      async (child, signal, _offer, budget, initial) => {
+        if (initial) {
+          expect(budget).toBe(2000);
+          warmSignal = signal;
+          return new Promise(() => {});
+        }
+        if (warmSignal) {
+          coldRetries++;
+          expect(budget).toBe(2500);
+          controller.abort();
+          return undefined;
+        }
+        return quantity(child) === 1 ? row(child) : undefined;
+      },
+      { signal: controller.signal },
+    );
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(warmSignal).toBeDefined();
+    expect(warmSignal!.aborted).toBe(false);
+    expect(coldRetries).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(warmSignal!.aborted).toBe(true);
+    expect(coldRetries).toBe(1);
+  });
+
+  it('clips configured warm insertion budget to the remaining global deadline', async () => {
+    const input = job(2, 1, 10);
+    input.settings.sheetLengthMm = 30;
+    input.settings.sheetInsertionWarmStartSeconds = 30;
+    const budgets: number[] = [];
+    const pending = solveSheets(
+      input,
+      async (child, _signal, _offer, budget, initial) => {
+        if (initial) {
+          budgets.push(budget!);
+          return new Promise(() => {});
+        }
+        if (quantity(child) > 1) return undefined;
+        return row(child);
+      },
+      {
+        normalize: async (child) => {
+          await new Promise((resolve) => setTimeout(resolve, 9000));
+          return normalizeJob(child);
+        },
+      },
+    );
+    const outcome = await finish(pending, 10_000);
+    expect(budgets).toHaveLength(1);
+    expect(budgets[0]).toBeGreaterThan(0);
+    expect(budgets[0]).toBeLessThanOrEqual(1000);
+    expect(outcome.result.elapsedSeconds).toBe(10);
+    expect(outcome.result.unplaced![0].quantity).toBe(1);
   });
 
   it('rejects self-declared valid malformed candidates, longer and equal results, accepting a later verified improvement', async () => {

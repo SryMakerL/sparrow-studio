@@ -39,6 +39,7 @@ export type JobSettings = {
   sheetLengthMm?: number;
   sheetCount?: number;
   sheetCompressionSeconds?: number;
+  sheetInsertionWarmStartSeconds?: number;
   sheetInsertionFailures?: number;
   solverPreset: Preset;
   materialWidthMm: number;

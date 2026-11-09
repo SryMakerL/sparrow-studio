@@ -83,7 +83,11 @@ it('reuses one worker and selects only validated internal snapshots across attem
   session.close();
 });
 
+<<<<<<< HEAD
 it('returns and retains the last equal-width rearrangement for the next warm insertion', async () => {
+=======
+it('keeps the last equal-width compression candidate as the next warm-start snapshot', async () => {
+>>>>>>> dev
   const steps: Record<string, unknown>[] = [];
   class MockWorker {
     onmessage?: (event: { data: unknown }) => void;
@@ -95,8 +99,13 @@ it('returns and retains the last equal-width rearrangement for the next warm ins
       queueMicrotask(() => {
         for (const [snapshotId, y] of steps.length === 2
           ? [
+<<<<<<< HEAD
               [20, 0],
               [21, 20],
+=======
+              [20, 1],
+              [21, 5],
+>>>>>>> dev
             ]
           : [[10, 0]]) {
           this.send({
@@ -125,11 +134,19 @@ it('returns and retains the last equal-width rearrangement for the next warm ins
   const session = new SheetWorkerSession(job, 7);
   const initial = (await session.attempt(job))!;
   session.accept(initial);
+<<<<<<< HEAD
   const rearranged = (await session.attempt(job, undefined, undefined, 1000, initial))!;
   expect(rearranged.placements[0].yMm).toBe(20);
   session.accept(rearranged);
   const insertionJob = { ...job, parts: job.parts.map((part) => ({ ...part, quantity: 2 })) };
   await session.attempt(insertionJob, undefined, undefined, 1000, rearranged);
+=======
+  const latest = (await session.attempt(job, undefined, undefined, 1000, initial))!;
+  expect(latest.placements[0].yMm).toBe(5);
+  session.accept(latest);
+  const child = { ...job, parts: job.parts.map((part) => ({ ...part, quantity: 2 })) };
+  await session.attempt(child, undefined, undefined, 1000, latest);
+>>>>>>> dev
   expect(steps[2]).toMatchObject({ initialSnapshot: 21, retainSnapshot: 21, mode: 'search' });
   session.close();
 });

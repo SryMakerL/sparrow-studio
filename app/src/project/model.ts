@@ -64,6 +64,7 @@ export type SolverSettings = {
   solveWith: SolveWith;
   timeLimitSeconds: TimeLimit;
   sheetCompressionSeconds: number;
+  sheetInsertionWarmStartSeconds: number;
   sheetInsertionFailures: number;
   preset: Preset;
   threads: Threads;
@@ -100,6 +101,7 @@ export const DEFAULT_SOLVER_SETTINGS: SolverSettings = {
   solveWith: 'local',
   timeLimitSeconds: null,
   sheetCompressionSeconds: 10,
+  sheetInsertionWarmStartSeconds: 10,
   sheetInsertionFailures: 3,
   preset: 'standard',
   threads: 0,
@@ -142,6 +144,7 @@ export function projectJob(project: ProjectDocument): Job {
       clearanceMm: activeMachine(project).gapMm,
       timeLimitSeconds: project.settings.timeLimitSeconds,
       sheetCompressionSeconds: project.settings.sheetCompressionSeconds,
+      sheetInsertionWarmStartSeconds: project.settings.sheetInsertionWarmStartSeconds,
       sheetInsertionFailures: project.settings.sheetInsertionFailures,
       ...(project.stock.packing === 'sheets'
         ? {
@@ -200,6 +203,12 @@ export function startBlockers(project: ProjectDocument): string[] {
     project.settings.sheetCompressionSeconds > 600
   )
     reasons.push('Set a sheet compression duration from 1 to 600 seconds in Settings.');
+  if (
+    !Number.isInteger(project.settings.sheetInsertionWarmStartSeconds) ||
+    project.settings.sheetInsertionWarmStartSeconds < 1 ||
+    project.settings.sheetInsertionWarmStartSeconds > 600
+  )
+    reasons.push('Set a sheet insertion warm-start duration from 1 to 600 seconds in Settings.');
   if (
     !Number.isInteger(project.settings.sheetInsertionFailures) ||
     project.settings.sheetInsertionFailures < 1 ||

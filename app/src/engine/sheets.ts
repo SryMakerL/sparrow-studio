@@ -263,6 +263,7 @@ async function solveSheetRound(
   let length = stock.lengthMm;
   const count = stocks.length;
   const compressionMs = (job.settings.sheetCompressionSeconds ?? 10) * 1000;
+  const insertionWarmStartMs = (job.settings.sheetInsertionWarmStartSeconds ?? 10) * 1000;
   const insertionFailureLimit = job.settings.sheetInsertionFailures ?? 3;
   const started = performance.now(),
     sheets: SheetEntry[] = [];
@@ -321,7 +322,10 @@ async function solveSheetRound(
     const adding = !!initialPlacement && ids.length > initialPlacement.placements.length;
     const budget = Math.max(
       0,
-      Math.min(mode === 'compress' ? compressionMs : adding ? 10_000 : 2500, remainingMs),
+      Math.min(
+        mode === 'compress' ? compressionMs : adding ? insertionWarmStartMs : 2500,
+        remainingMs,
+      ),
     );
     const quantities = new Map<string, number>();
     ids.forEach((id) => quantities.set(id, (quantities.get(id) ?? 0) + 1));
@@ -482,8 +486,13 @@ async function solveSheetRound(
     let working: SheetEntry | undefined;
     let selected: string[] = [];
     let insertionFailures = 0;
+<<<<<<< HEAD
     let sheetEndReason: SheetProgress['sheetEndReason'];
     let compressionStatus: SheetProgress['compressionStatus'];
+=======
+    let insertionPass = 0;
+    let previousFailed = new Set<string>();
+>>>>>>> dev
     let phase: SheetProgress['phase'] = 'Insertion';
     const progress = () =>
       options.onProgress?.({
@@ -542,10 +551,14 @@ async function solveSheetRound(
         compressionStatus = undefined;
         progress();
         successful.clear();
+<<<<<<< HEAD
         await attempt([...selected], 'compress', working!.result, (started) => {
           compressionStatus = started ? 'running' : 'skipped-budget';
           progress();
         });
+=======
+        await attempt([...selected], 'compress', working!.result);
+>>>>>>> dev
         if (stopped()) break;
         compressionStatus = undefined;
         if (selected.length === pool.length) {
@@ -593,7 +606,20 @@ async function solveSheetRound(
         const available = [...pool];
         selected.forEach((id) => available.splice(available.indexOf(id), 1));
         let filledArea = selected.reduce((sum, id) => sum + areas.get(id)!, 0);
-        for (const id of new Set(available)) {
+        const availableIds = [...new Set(available)];
+        const candidates = priorityLevels.flatMap((priority) => {
+          const group = availableIds.filter(
+            (id) => job.parts.find((part) => part.id === id)!.priority === priority,
+          );
+          if (!group.length) return group;
+          const offset = insertionPass % group.length;
+          const rotated = [...group.slice(offset), ...group.slice(0, offset)];
+          return rotated.sort(
+            (a, b) => Number(previousFailed.has(a)) - Number(previousFailed.has(b)),
+          );
+        });
+        const failed = new Set<string>();
+        for (const id of candidates) {
           const itemArea = areas.get(id)!;
           let low = 0;
           let high = Math.min(
@@ -611,11 +637,14 @@ async function solveSheetRound(
               low = batch;
               step *= 2;
             } else {
+              if (!stopped()) failed.add(id);
               high = batch - 1;
               step = Math.max(1, Math.floor(step / 2));
             }
           }
         }
+        previousFailed = failed;
+        insertionPass++;
       }
       if (initialPass) {
         initialPass = false;
