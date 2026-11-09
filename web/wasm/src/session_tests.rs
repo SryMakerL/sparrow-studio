@@ -35,6 +35,128 @@ fn candidate(messages: &[Value]) -> u32 {
 }
 
 #[test]
+fn coordinate_restoration_preserves_external_transformations_and_inserts_missing_parts() {
+    let catalog = json!({"name":"rotated session", "strip_height":100, "stock_length":160,
+        "items":[{"id":0,"demand":2,"allowed_orientations":[0,90],
+            "shape":{"type":"rectangle","data":{"x_min":7,"y_min":-3,"width":20,"height":10}}},
+            {"id":1,"demand":1,"allowed_orientations":[0],
+            "shape":{"type":"rectangle","data":{"x_min":0,"y_min":0,"width":12,"height":12}}}]});
+    for mode in ["search", "compress", "continuous"] {
+        let mut session = SheetSession::create(&catalog.to_string(), 2.0, "fast").unwrap();
+        let input = json!({"quantities":[2,1], "mode":mode, "budget_ms":0,
+            "initial_placement":{"used_length_mm":70,"placements":[
+                {"item_id":0,"rotation":90,"translation":[40,10]}]}});
+        let messages = step(&mut session, &input.to_string()).unwrap();
+        let solution = &session.snapshots[&candidate(&messages)];
+        let output = export(&session.catalog, solution, session.epoch);
+        assert_eq!(output.layout.placed_items.len(), 3);
+        let restored = output
+            .layout
+            .placed_items
+            .iter()
+            .find(|item| {
+                let (x, y) = item.transformation.translation;
+                item.item_id == 0 && (x - 40.0).abs() < 1e-4 && (y - 10.0).abs() < 1e-4
+            })
+            .expect("restored external coordinates must survive insertion");
+        assert!((restored.transformation.rotation - 90.0).abs() < 1e-4);
+        assert!(Layout::from_snapshot(&solution.layout_snapshot).is_feasible());
+        assert_eq!(messages.last().unwrap()["type"], "finished");
+    }
+}
+
+#[test]
+fn coordinate_restoration_keeps_catalog_ids_with_zero_demand_entries() {
+    let mut session = session();
+    let input = json!({"quantities":[0,1],"mode":"search","budget_ms":0,
+        "initial_placement":{"used_length_mm":60,"placements":[
+            {"item_id":1,"rotation":0,"translation":[40,10]}]}});
+    let messages = step(&mut session, &input.to_string()).unwrap();
+    let solution = &session.snapshots[&candidate(&messages)];
+    let output = export(&session.catalog, solution, session.epoch);
+    assert_eq!(output.layout.placed_items.len(), 1);
+    let restored = &output.layout.placed_items[0];
+    assert_eq!(restored.item_id, 1);
+    assert_eq!(restored.transformation.translation, (40.0, 10.0));
+    assert!(Layout::from_snapshot(&solution.layout_snapshot).is_feasible());
+}
+
+#[test]
+fn coordinate_restoration_rejects_invalid_geometry_ids_counts_and_insertions() {
+    let valid = json!({"used_length_mm":80,"placements":[
+        {"item_id":0,"rotation":0,"translation":[40,10]}]});
+    let mut invalid = vec![];
+    for (field, value) in [
+        ("item_id", json!(99)),
+        ("item_id", json!(1)),
+        ("rotation", json!(45)),
+        ("translation", json!([-100, 10])),
+        ("translation", json!([115, 10])),
+    ] {
+        let mut placement = valid.clone();
+        placement["placements"][0][field] = value;
+        invalid.push(placement);
+    }
+    for used in [0, -1, 121] {
+        let mut placement = valid.clone();
+        placement["used_length_mm"] = json!(used);
+        invalid.push(placement);
+    }
+    invalid.push(json!({"used_length_mm":80,"placements":[]}));
+    invalid.push(json!({"used_length_mm":80,"placements":[
+        {"item_id":0,"rotation":0,"translation":[40,10]},
+        {"item_id":0,"rotation":0,"translation":[40,10]}]}));
+    invalid.push(json!({"used_length_mm":120,"placements":[
+        {"item_id":0,"rotation":0,"translation":[90,25]}]}));
+    invalid.push(json!({"used_length_mm":80,"placements":[
+        {"item_id":0,"rotation":0,"translation":[10,10]},
+        {"item_id":0,"rotation":0,"translation":[40,10]},
+        {"item_id":0,"rotation":0,"translation":[70,10]}]}));
+    for initial in invalid {
+        let mut session = session();
+        let input = json!({"quantities":[2,0],"mode":"search","budget_ms":0,
+            "initial_placement":initial});
+        let error = step(&mut session, &input.to_string()).unwrap_err();
+        assert!(
+            error.starts_with("Warm-start restoration failed:"),
+            "{error}"
+        );
+        assert!(session.snapshots.is_empty());
+    }
+    let mut session = session();
+    let input = json!({"quantities":[500,0],"mode":"search","budget_ms":0,
+        "initial_placement":valid});
+    let error = step(&mut session, &input.to_string()).unwrap_err();
+    assert!(error.starts_with("Warm start insertion failed:"));
+    assert!(session.snapshots.is_empty());
+}
+
+#[test]
+fn snapshot_takes_precedence_over_coordinate_restoration() {
+    let mut session = session();
+    let first = candidate(&step(&mut session, &request(&[1, 0], None, None, "search")).unwrap());
+    let original = session.snapshots[&first].clone();
+    let input = json!({"quantities":[1,0],"mode":"search","budget_ms":0,
+        "initial_snapshot":first, "initial_placement":{"used_length_mm":0,"placements":[]}});
+    let messages = step(&mut session, &input.to_string()).unwrap();
+    let restored = &session.snapshots[&candidate(&messages)];
+    assert_eq!(restored.strip.width, original.strip.width);
+    for (key, item) in &original.layout_snapshot.placed_items {
+        assert_eq!(
+            restored.layout_snapshot.placed_items[key].d_transf,
+            item.d_transf
+        );
+    }
+    let mut input = input;
+    input["initial_snapshot"] = json!(u32::MAX);
+    assert!(
+        step(&mut session, &input.to_string())
+            .unwrap_err()
+            .contains("expired")
+    );
+}
+
+#[test]
 fn catalog_import_is_shared_across_steps_and_stock_is_preserved() {
     let mut session = session();
     let request = session
@@ -180,18 +302,24 @@ fn expired_ids_are_never_recycled_and_unknown_initial_keeps_retain() {
 
 #[test]
 fn catalog_and_requests_accept_more_than_five_hundred_parts() {
-    let items: Vec<_> = (0..501).map(|id| json!({
-        "id":id, "demand":if id == 0 { 501 } else { 1 },
-        "allowed_orientations":[0],
-        "shape":{"type":"rectangle","data":{"x_min":0,"y_min":0,"width":1,"height":1}}
-    })).collect();
+    let items: Vec<_> = (0..501)
+        .map(|id| {
+            json!({
+                "id":id, "demand":if id == 0 { 501 } else { 1 },
+                "allowed_orientations":[0],
+                "shape":{"type":"rectangle","data":{"x_min":0,"y_min":0,"width":1,"height":1}}
+            })
+        })
+        .collect();
     let input = json!({"name":"large catalog","strip_height":100,"stock_length":100,"items":items});
     let session = SheetSession::create(&input.to_string(), 0.0, "fast").unwrap();
     assert_eq!(session.catalog.items.len(), 501);
     assert_eq!(session.catalog.items[0].1, 501);
     let mut quantities = vec![1; 501];
     quantities[0] = 100_001;
-    let parsed = session.parse_request(&request(&quantities, None, None, "search")).unwrap();
+    let parsed = session
+        .parse_request(&request(&quantities, None, None, "search"))
+        .unwrap();
     assert_eq!(parsed.quantities, quantities);
 }
 

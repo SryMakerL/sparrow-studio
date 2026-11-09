@@ -306,6 +306,8 @@ async function solveSheetRound(
     ids: string[],
     mode: 'search' | 'compress' = 'search',
     initialPlacement?: Result,
+    insertion = false,
+    compressionBudgetMs = compressionMs,
   ): Promise<SheetEntry | undefined> => {
     if (stopped()) return;
     const remainingMs = (options.deadline ?? Infinity) - performance.now();
@@ -313,7 +315,11 @@ async function solveSheetRound(
     const budget = Math.max(
       0,
       Math.min(
-        mode === 'compress' ? compressionMs : adding ? insertionWarmStartMs : 2500,
+        mode === 'compress'
+          ? compressionBudgetMs
+          : insertion || adding
+            ? insertionWarmStartMs
+            : 2500,
         remainingMs,
       ),
     );
@@ -324,7 +330,14 @@ async function solveSheetRound(
       JSON.stringify([...quantities].sort(([a], [b]) => a.localeCompare(b)));
     const cached = successful.get(key);
     if (cached && mode === 'search') return structuredClone(cached);
-    if (budget < 50) return;
+    if (budget < 50) {
+      if (remainingMs < 50 && Number.isFinite(remainingMs))
+        await untilAbort(
+          new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, remainingMs))),
+          signal,
+        );
+      return;
+    }
     const solverController = new AbortController();
     const attemptController = new AbortController();
     const stopSolver = () => solverController.abort();
@@ -519,20 +532,37 @@ async function solveSheetRound(
     const pool = ordered.flatMap((p) => Array.from({ length: remaining.get(p.id)! }, () => p.id));
     if (!pool.length) break;
     let initialPass = true;
+    let finalCompressionDeadline: number | undefined;
     while (!stopped()) {
       if (!initialPass && best) {
+        if (selected.length === pool.length)
+          finalCompressionDeadline ??= Math.min(
+            performance.now() + compressionMs * insertionFailureLimit,
+            options.deadline ?? Infinity,
+          );
+        const remainingCompressionMs =
+          finalCompressionDeadline === undefined
+            ? compressionMs
+            : finalCompressionDeadline - performance.now();
+        if (remainingCompressionMs <= 0) break;
         phase = 'Compression';
         progress();
         successful.clear();
-        await attempt([...selected], 'compress', working!.result);
+        await attempt(
+          [...selected],
+          'compress',
+          working!.result,
+          false,
+          Math.min(compressionMs, remainingCompressionMs),
+        );
         if (stopped()) break;
-        if (selected.length === pool.length) {
-          if (sheets.length > 0) break;
+        if (finalCompressionDeadline !== undefined) {
+          if (performance.now() >= finalCompressionDeadline) break;
           await untilAbort(
             new Promise<void>((resolve) =>
               setTimeout(
                 resolve,
-                Math.min(100, Math.max(0, (options.deadline ?? Infinity) - performance.now())),
+                Math.min(100, Math.max(0, finalCompressionDeadline! - performance.now())),
               ),
             ),
             signal,
@@ -593,7 +623,7 @@ async function solveSheetRound(
             const batch = Math.min(high, low + step);
             const before = [...selected];
             const ids = [...before, ...Array<string>(batch - low).fill(id)];
-            const trial = (await attempt(ids, 'search', working?.result)) ?? (await attempt(ids));
+            const trial = await attempt(ids, 'search', working?.result, true);
             if (trial) {
               filledArea += (batch - low) * itemArea;
               low = batch;
@@ -608,6 +638,7 @@ async function solveSheetRound(
         previousFailed = failed;
         insertionPass++;
       }
+      if (stopped()) break;
       if (initialPass) {
         initialPass = false;
       } else {

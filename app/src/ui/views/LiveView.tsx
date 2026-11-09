@@ -112,7 +112,7 @@ export function LiveView() {
                   {limit
                     ? ` of ${formatSeconds(limit)}${batch ? ' total search time' : ''}`
                     : batch
-                      ? ' · one-sheet complete layouts keep compressing until Stop'
+                      ? ` · final-sheet compression: up to ${formatSeconds((runJob.settings.sheetCompressionSeconds ?? 10) * (runJob.settings.sheetInsertionFailures ?? 3))}`
                       : ' · stops when the search stalls'}
                 </span>
                 {limit && (
@@ -261,7 +261,7 @@ function NextRun({ onSolution }: { onSolution?: () => void }) {
           {settings.timeLimitSeconds
             ? `${project.stock.packing === 'sheets' ? 'total search time: ' : 'after '}${formatSeconds(settings.timeLimitSeconds)}`
             : project.stock.packing === 'sheets'
-              ? 'one-sheet complete layouts: manual Stop; otherwise automatic'
+              ? `automatic · final-sheet compression: up to ${formatSeconds(settings.sheetCompressionSeconds * settings.sheetInsertionFailures)}`
               : 'when the search stalls'}
         </dd>
         <dt>Search</dt>
