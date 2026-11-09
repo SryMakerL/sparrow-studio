@@ -486,13 +486,10 @@ async function solveSheetRound(
     let working: SheetEntry | undefined;
     let selected: string[] = [];
     let insertionFailures = 0;
-<<<<<<< HEAD
     let sheetEndReason: SheetProgress['sheetEndReason'];
     let compressionStatus: SheetProgress['compressionStatus'];
-=======
     let insertionPass = 0;
     let previousFailed = new Set<string>();
->>>>>>> dev
     let phase: SheetProgress['phase'] = 'Insertion';
     const progress = () =>
       options.onProgress?.({
@@ -551,14 +548,11 @@ async function solveSheetRound(
         compressionStatus = undefined;
         progress();
         successful.clear();
-<<<<<<< HEAD
         await attempt([...selected], 'compress', working!.result, (started) => {
           compressionStatus = started ? 'running' : 'skipped-budget';
           progress();
         });
-=======
         await attempt([...selected], 'compress', working!.result);
->>>>>>> dev
         if (stopped()) break;
         compressionStatus = undefined;
         if (selected.length === pool.length) {
