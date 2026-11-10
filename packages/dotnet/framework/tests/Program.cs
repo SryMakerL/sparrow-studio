@@ -77,7 +77,8 @@ internal static class Program
         Assert(!string.IsNullOrEmpty(result.SolverRevision), "Native solver revision.");
         Assert(result.UsedLengthMm > 0 && !double.IsNaN(result.UsedLengthMm) &&
             !double.IsInfinity(result.UsedLengthMm), "Finite used length.");
-        Assert(result.Validation != null && result.Validation.Status == "pending", "Native validation status.");
+        Assert(result.Validation != null && result.Validation.Status == "passed" &&
+            result.Validation.Errors.Length == 0, "Native independent geometry validation.");
         var copies = new HashSet<int>();
         foreach (Placement placement in result.Placements)
         {
@@ -131,6 +132,58 @@ internal static class Program
         }
         Assert(inFlightCancelled, "Running native operation respects cancellation.");
         Console.WriteLine("PASS: in-flight cancellation and native handle cleanup.");
+
+        job.Parts[0].Quantity = 3;
+        job.Parts[0].Rotations = new RotationRule { Degrees = new double[] { 0 } };
+        job.Settings.MaterialWidthMm = 11;
+        job.Settings.SheetLengthMm = 11;
+        job.Settings.SheetCount = 2;
+        job.Settings.ClearanceMm = 0;
+        job.Settings.SheetCompressionSeconds = 1;
+        job.Settings.SheetInsertionWarmStartSeconds = 1;
+        job.Settings.SheetInsertionFailures = 1;
+        Result boards = await solver.SolveBestAsync(job, seed: 42);
+        Assert(boards.Sheets != null && boards.Sheets.Length == 2, "Two physical boards.");
+        int placed = 0;
+        foreach (SheetResult board in boards.Sheets)
+        {
+            Assert(board.Result.Validation.Status == "passed", "Per-board validation.");
+            placed += board.Result.Placements.Length;
+        }
+        Assert(placed == 2 && boards.Unplaced != null && boards.Unplaced.Length == 1 &&
+            boards.Unplaced[0].Quantity == 1, "Placed plus unplaced equals original demand.");
+        Assert(boards.Validation.Status == "passed", "Aggregate validation.");
+        Console.WriteLine("PASS: multi-board partial result and demand conservation.");
+
+        using (var session = new NestingSession(job, documentRevision: 23))
+        {
+            Result best = await session.RunAsync(seed: 42);
+            SessionSnapshot final = session.Poll();
+            Assert(best.DocumentRevision == 23 && final.Status == "finished" && final.Sequence > 0,
+                "Session lifecycle, revision and progress sequence.");
+            Assert(solver.Validate(job, best).Status == "passed", "Aggregate revalidation.");
+            best.Sheets[0].Result.Placements[0].XMm = -1000;
+            Assert(solver.Validate(job, best).Status == "failed", "Reject tampered board coordinate.");
+        }
+        Console.WriteLine("PASS: native session and independent aggregate tamper detection.");
+
+        job.Parts[0].Quantity = 100;
+        job.Settings.SheetCount = 100;
+        job.Settings.TimeLimitSeconds = 600;
+        using (var source = new CancellationTokenSource())
+        {
+            Task<Result> running = solver.SolveBestAsync(job, source.Token, seed: 42);
+            source.CancelAfter(150);
+            Result stopped = await running;
+            int accounted = 0;
+            if (stopped.Sheets != null)
+                foreach (SheetResult sheet in stopped.Sheets) accounted += sheet.Result.Placements.Length;
+            if (stopped.Unplaced != null)
+                foreach (UnplacedPart missing in stopped.Unplaced) accounted += missing.Quantity;
+            Assert(accounted == 100 && stopped.Validation.Status == "passed",
+                "Cancelled best result preserves all placed and missing demand.");
+        }
+        Console.WriteLine("PASS: cancellation preserves validated best partial result.");
     }
 
     private static void Assert(bool condition, string message)

@@ -19,7 +19,32 @@ public sealed class NestingSolver
         return Task.Run(() => Solve(json, actualSeed, documentRevision, cancellationToken));
     }
 
-    private static Result Solve(string json, ulong seed, uint revision, CancellationToken cancellationToken)
+    public Task<Result> SolveBestAsync(Job job, CancellationToken cancellationToken = default,
+        ulong? seed = null, uint documentRevision = 1)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        if (!OperatingSystem.IsWindows() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
+            throw new PlatformNotSupportedException("This package includes the Windows x64 native solver only.");
+        cancellationToken.ThrowIfCancellationRequested();
+        var json = JsonSerializer.Serialize(job, SparrowJson.CreateOptions());
+        var actualSeed = seed ?? BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(sizeof(ulong)));
+        return Task.Run(() => Solve(json, actualSeed, documentRevision, cancellationToken, true));
+    }
+
+    public Validation Validate(Job job, Result result)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        ArgumentNullException.ThrowIfNull(result);
+        if (!OperatingSystem.IsWindows() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
+            throw new PlatformNotSupportedException("This package includes the Windows x64 native solver only.");
+        var options = SparrowJson.CreateOptions();
+        return NativeSessionJson.Read(NativeSessionMethods.Validate(
+            JsonSerializer.Serialize(job, options), JsonSerializer.Serialize(result, options)))
+            .Deserialize<Validation>(options)!;
+    }
+
+    private static Result Solve(string json, ulong seed, uint revision, CancellationToken cancellationToken,
+        bool preserveBestOnCancellation = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var cancel = NativeMethods.CreateCancellation();
@@ -28,7 +53,7 @@ public sealed class NestingSolver
         var response = NativeMethods.SolveJson(json, seed, revision, cancel);
         try
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (!preserveBestOnCancellation) cancellationToken.ThrowIfCancellationRequested();
             if (response == IntPtr.Zero) throw new InvalidOperationException("The native solver returned no response.");
             var text = Marshal.PtrToStringUTF8(response)
                 ?? throw new InvalidOperationException("The native solver returned invalid UTF-8.");

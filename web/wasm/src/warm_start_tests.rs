@@ -1,7 +1,7 @@
 use super::*;
 use jagua_rs::Instant;
 use jagua_rs::io::import::Importer;
-use jagua_rs::probs::spp::io::{export, import_instance, ext_repr::ExtSPInstance};
+use jagua_rs::probs::spp::io::{export, ext_repr::ExtSPInstance, import_instance};
 use rand::SeedableRng;
 use serde_json::{Value, json};
 use sparrow::config::DEFAULT_SPARROW_CONFIG;
@@ -21,7 +21,7 @@ fn setup(value: &Value) -> Result<(SPInstance, Input), String> {
     let importer = Importer::new(DEFAULT_SPARROW_CONFIG.cde_config, None, Some(2.0), None);
     let external: ExtSPInstance = serde_json::from_value(value.clone()).unwrap();
     let instance = import_instance(&importer, &external).unwrap();
-    let instance = crate::stock::apply(instance, crate::stock::parse(&value.to_string(), 100.0)? )?;
+    let instance = crate::stock::apply(instance, crate::stock::parse(&value.to_string(), 100.0)?)?;
     let parsed = parse(&value.to_string())?;
     Ok((apply_stock_length(instance, &parsed)?, parsed))
 }
@@ -33,18 +33,34 @@ fn run(value: &Value) -> Result<SPSolution, String> {
 }
 
 #[test]
-fn restores_external_rotation_and_non_origin_coordinates_with_clearance_and_inserts_missing_demands() {
+fn restores_external_rotation_and_non_origin_coordinates_with_clearance_and_inserts_missing_demands()
+ {
     let value = input();
     let (instance, parsed) = setup(&value).unwrap();
     let epoch = Instant::now();
-    let solution = construct(&instance, &parsed, Xoshiro256PlusPlus::seed_from_u64(42)).unwrap().unwrap();
+    let solution = construct(&instance, &parsed, Xoshiro256PlusPlus::seed_from_u64(42))
+        .unwrap()
+        .unwrap();
     let output = export(&instance, &solution, epoch);
     assert_eq!(output.layout.placed_items.len(), 3);
-    assert_eq!(output.layout.placed_items.iter().filter(|p| p.item_id == 0).count(), 2);
-    let old = output.layout.placed_items.iter().find(|p| {
-        let (x, y) = p.transformation.translation;
-        (x - 40.0).abs() < 1e-4 && (y - 10.0).abs() < 1e-4
-    }).expect("old external coordinates must remain unchanged during insertion");
+    assert_eq!(
+        output
+            .layout
+            .placed_items
+            .iter()
+            .filter(|p| p.item_id == 0)
+            .count(),
+        2
+    );
+    let old = output
+        .layout
+        .placed_items
+        .iter()
+        .find(|p| {
+            let (x, y) = p.transformation.translation;
+            (x - 40.0).abs() < 1e-4 && (y - 10.0).abs() < 1e-4
+        })
+        .expect("old external coordinates must remain unchanged during insertion");
     assert!((old.transformation.rotation - 90.0).abs() < 1e-4);
     assert!(solution.strip.width <= 160.0);
     let mut prob = SPProblem::new(instance);
@@ -59,11 +75,14 @@ fn preserves_static_hazards_and_rejects_old_parts_inside_holes() {
     value["stock_geometry"] = json!({"outer":[[0,0],[160,0],[160,100],[0,100]],
         "holes":[[[80,30],[110,30],[110,70],[80,70]]]});
     let solution = run(&value).unwrap();
-    let holes = &solution.layout_snapshot.container.quality_zones[0].as_ref().unwrap().shapes_cd;
+    let holes = &solution.layout_snapshot.container.quality_zones[0]
+        .as_ref()
+        .unwrap()
+        .shapes_cd;
     assert!(!holes.is_empty());
     assert_eq!(holes[0].bbox.x_min, 80.0);
     value["initial_placement"]["used_length_mm"] = json!(150);
-    value["initial_placement"]["placements"][0]["translation"] = json!([90,35]);
+    value["initial_placement"]["placements"][0]["translation"] = json!([90, 35]);
     assert!(run(&value).unwrap_err().contains("collides"));
 }
 
@@ -94,9 +113,13 @@ fn restores_at_full_stock_width_instead_of_treating_used_length_as_a_wall() {
 
 #[test]
 fn rejects_bad_ids_counts_angles_lengths_and_collisions() {
-    for (field, invalid) in [("item_id", json!(99)), ("rotation", json!(45)),
-        ("rotation", json!(1e100)), ("translation", json!([1e100, 10])),
-        ("translation", json!([-100, 10]))] {
+    for (field, invalid) in [
+        ("item_id", json!(99)),
+        ("rotation", json!(45)),
+        ("rotation", json!(1e100)),
+        ("translation", json!([1e100, 10])),
+        ("translation", json!([-100, 10])),
+    ] {
         let mut value = input();
         value["initial_placement"]["placements"][0][field] = invalid;
         assert!(run(&value).is_err(), "{field}: {value}");
@@ -123,5 +146,9 @@ fn absent_warm_input_leaves_the_original_unbounded_instance_unchanged() {
     value.as_object_mut().unwrap().remove("stock_length");
     let (instance, parsed) = setup(&value).unwrap();
     assert!(instance.stock_constraints.is_none());
-    assert!(construct(&instance, &parsed, Xoshiro256PlusPlus::seed_from_u64(42)).unwrap().is_none());
+    assert!(
+        construct(&instance, &parsed, Xoshiro256PlusPlus::seed_from_u64(42))
+            .unwrap()
+            .is_none()
+    );
 }

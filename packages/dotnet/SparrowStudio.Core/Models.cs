@@ -51,7 +51,8 @@ public sealed record JobSettings
     public SheetStock? SheetStock { get; init; }
     public double? SheetLengthMm { get; init; }
     public int? SheetCount { get; init; }
-    public double? SheetCompressionSeconds { get; init; }
+    public int? SheetCompressionSeconds { get; init; }
+    public int? SheetInsertionWarmStartSeconds { get; init; }
     public int? SheetInsertionFailures { get; init; }
     public string SolverPreset { get; init; } = "standard";
     public double MaterialWidthMm { get; init; } = 1000;
@@ -94,6 +95,9 @@ public sealed record Result
     public required string Seed { get; init; }
     public double ElapsedSeconds { get; init; }
     public double UsedLengthMm { get; init; }
+    public string? Reason { get; init; }
+    public bool Cancelled { get; init; }
+    public uint? SnapshotId { get; init; }
     public required Placement[] Placements { get; init; }
     public Validation Validation { get; init; } = new();
     public int? RoundIndex { get; init; }

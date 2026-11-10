@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework><LangVersion>7.3</LangVersion><PlatformTarget>x64</PlatformTarget>
+    <UseWindowsForms>true</UseWindowsForms><Version>0.2.0</Version><PackageId>SparrowStudio.WinForms.Framework</PackageId>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies><PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SparrowStudio.Core/SparrowStudio.Core.csproj" />
+    <PackageReference Include="Newtonsoft.Json" Version="[13.0.1]" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="[1.0.3179.45]" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <EmbeddedResource Include="Web/preview.html" /><EmbeddedResource Include="Web/preview.css" /><EmbeddedResource Include="Web/preview.js" />
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <Target Name="ReferenceDistribution" AfterTargets="Build">
+    <ItemGroup><Distribution Include="$(TargetDir)*.dll" /><Distribution Include="$(TargetDir)sparrow_dotnet_native.dll" /><Distribution Include="$(NuGetPackageRoot)microsoft.web.webview2/1.0.3179.45/runtimes/win-x64/native/WebView2Loader.dll" /><Distribution Include="README.md" /><Distribution Include="../../../../LICENSE" /><Distribution Include="../../../../web/public/THIRD_PARTY_NOTICES.txt" /><Distribution Include="$(NuGetPackageRoot)microsoft.web.webview2/1.0.3179.45/LICENSE.txt" /></ItemGroup>
+    <Copy SourceFiles="@(Distribution)" DestinationFolder="../dist/WinForms/$(Configuration)/" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

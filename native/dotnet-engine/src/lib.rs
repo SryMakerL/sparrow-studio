@@ -10,7 +10,20 @@ use jagua_rs::{
     },
 };
 use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+mod abi;
+mod compression;
+#[cfg(test)]
+mod extended_tests;
+mod kernel;
+#[cfg(test)]
+mod native_tests;
+#[cfg(test)]
+mod parity_tests;
+mod polygon;
+mod sheets;
+mod validation;
 use serde_json::{Value, json};
 use sparrow::{
     config::{DEFAULT_SPARROW_CONFIG, ShrinkDecayStrategy, SparrowConfig},
@@ -29,6 +42,7 @@ use std::{
     time::Duration,
 };
 
+#[allow(clippy::items_after_test_module)]
 #[path = "../../../web/wasm/src/stock.rs"]
 mod stock;
 #[path = "../../../web/wasm/src/warm_start.rs"]
@@ -37,14 +51,14 @@ mod warm_start;
 const MAX_JSON: usize = 10 * 1024 * 1024;
 const SOLVER_REVISION: &str = "7f0e10f946f70a86138d3938548a13ee46464f39+studio-static-stock-1";
 type Ring = Vec<[f64; 2]>;
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Job {
     name: String,
     parts: Vec<Part>,
     settings: Settings,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Part {
     id: String,
@@ -58,31 +72,39 @@ struct Part {
     priority: i32,
     rotations: Rotations,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct Source {
     format: String,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum Rotations {
     Continuous,
     Discrete { degrees: Vec<f64> },
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Settings {
     material_width_mm: f64,
     clearance_mm: f64,
     time_limit_seconds: Option<u32>,
     solver_preset: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sheet_length_mm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sheet_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sheet_stock: Option<SheetStock>,
-    sheet_stocks: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sheet_stocks: Option<Vec<SheetStock>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sheet_insertion_warm_start_seconds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sheet_compression_seconds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sheet_insertion_failures: Option<u32>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SheetStock {
     id: String,
@@ -94,7 +116,7 @@ struct SheetStock {
     #[serde(flatten)]
     shape: StockShape,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum StockShape {
     Rectangle,
@@ -258,7 +280,10 @@ fn geometry(outer: &Ring, holes: &[Ring]) -> Result<(), String> {
     }
     let original = Polygon::new(
         LineString::from(outer.iter().map(|p| (p[0], p[1])).collect::<Vec<_>>()),
-        holes.iter().map(|h| LineString::from(h.iter().map(|p| (p[0], p[1])).collect::<Vec<_>>())).collect(),
+        holes
+            .iter()
+            .map(|h| LineString::from(h.iter().map(|p| (p[0], p[1])).collect::<Vec<_>>()))
+            .collect(),
     );
     if !original.is_valid() {
         return Err("Invalid original polygon or hole topology".into());
@@ -279,12 +304,7 @@ fn geometry(outer: &Ring, holes: &[Ring]) -> Result<(), String> {
 }
 fn validate(job: &Job) -> Result<(), String> {
     let s = &job.settings;
-    if s.sheet_stocks.is_some()
-        || s.sheet_count.is_some_and(|n| n > 1)
-        || s.sheet_stock.as_ref().is_some_and(|v| v.quantity > 1)
-    {
-        return Err("unsupported: multi-board inventory (sheetStocks / sheetCount > 1 / stock quantity > 1)".into());
-    }
+    sheets::validate_stocks(job)?;
     if job.name.trim().is_empty() || job.parts.is_empty() {
         return Err("Job requires a name and at least one part type".into());
     }
@@ -292,17 +312,19 @@ fn validate(job: &Job) -> Result<(), String> {
         || !s.clearance_mm.is_finite()
         || s.clearance_mm < 0.0
         || (s.clearance_mm > 0.0 && (s.clearance_mm as f32) == 0.0)
-        || (s.clearance_mm as f32) >= (s.material_width_mm as f32)
-        || s.clearance_mm >= s.material_width_mm
-        || s.sheet_length_mm
-            .is_some_and(|v| !positive(v) || v <= s.clearance_mm)
+        || (s.sheet_length_mm.is_none()
+            && s.sheet_stocks.is_none()
+            && (s.clearance_mm as f32) >= (s.material_width_mm as f32))
+        || s.sheet_length_mm.is_some_and(|v| !positive(v))
         || !matches!(
             s.time_limit_seconds,
             None | Some(10 | 30 | 60 | 120 | 300 | 600)
         )
         || !matches!(s.solver_preset.as_str(), "standard" | "fast")
         || s.sheet_count
-            .is_some_and(|v| v != 1 || s.sheet_length_mm.is_none())
+            .is_some_and(|v| v == 0 || s.sheet_length_mm.is_none())
+        || s.sheet_insertion_warm_start_seconds
+            .is_some_and(|v| !(1..=600).contains(&v))
         || s.sheet_compression_seconds
             .is_some_and(|v| !(1..=600).contains(&v))
         || s.sheet_insertion_failures
@@ -321,17 +343,16 @@ fn validate(job: &Job) -> Result<(), String> {
         {
             return Err("Invalid part identity, source, priority or tolerance".into());
         }
-        if let Rotations::Discrete { degrees } = &part.rotations {
-            if degrees.is_empty()
+        if let Rotations::Discrete { degrees } = &part.rotations
+            && (degrees.is_empty()
                 || degrees.len() > 5000
                 || degrees
                     .iter()
-                    .any(|v| !v.is_finite() || !(*v as f32).is_finite())
-            {
-                return Err(
-                    "Discrete rotations require 1..5000 finite solver-representable degrees".into(),
-                );
-            }
+                    .any(|v| !v.is_finite() || !(*v as f32).is_finite()))
+        {
+            return Err(
+                "Discrete rotations require 1..5000 finite solver-representable degrees".into(),
+            );
         }
         geometry(&part.outer, &part.holes)?;
     }
@@ -341,7 +362,7 @@ fn validate(job: &Job) -> Result<(), String> {
     if let Some(stock) = &s.sheet_stock {
         if stock.id.is_empty()
             || stock.name.len() > MAX_JSON
-            || stock.quantity != 1
+            || stock.quantity == 0
             || stock.priority < 0
             || !positive(stock.width_mm)
             || !positive(stock.length_mm)
@@ -398,6 +419,16 @@ fn solver_config(preset: &str, seconds: Option<u32>) -> SparrowConfig {
 }
 
 fn solve(input: &str, seed: u64, revision: u32, cancel: Option<&Cancel>) -> Result<Value, String> {
+    sheets::run(input, seed, revision, cancel, &mut |_| {})
+}
+
+#[allow(dead_code)]
+fn solve_legacy(
+    input: &str,
+    seed: u64,
+    revision: u32,
+    cancel: Option<&Cancel>,
+) -> Result<Value, String> {
     let started = Instant::now();
     if input.len() > MAX_JSON {
         return Err("Input exceeds 10 MiB".into());
@@ -496,7 +527,7 @@ mod tests {
     #[test]
     fn rectangle_solve() {
         let result = solve(&job().to_string(), 42, 7, None).unwrap();
-        assert_eq!(result["validation"]["status"], "pending");
+        assert_eq!(result["validation"]["status"], "passed");
         assert_eq!(result["documentRevision"], 7);
         assert_eq!(result["seed"], "42");
         assert_eq!(result["placements"].as_array().unwrap().len(), 2);
@@ -522,18 +553,14 @@ mod tests {
         assert!(solve(&j.to_string(), 0, 0, None).is_err());
         let mut j = job();
         j["settings"]["sheetCount"] = json!(2);
-        assert!(
-            solve(&j.to_string(), 0, 0, None)
-                .unwrap_err()
-                .contains("unsupported")
-        );
+        assert!(solve(&j.to_string(), 0, 0, None).is_err());
     }
     #[test]
     fn finite_stock_and_conservative_holes() {
         for polygon in [false, true] {
             let mut j = job();
             j["settings"]["sheetLengthMm"] = json!(80);
-            j["settings"]["sheetCount"] = json!(1);
+            // No sheetCount: this is a finite single-sheet solve, not an aggregate.
             if polygon {
                 j["settings"]["sheetStock"] = json!({"id":"board","name":"Board","quantity":1,"priority":0,"widthMm":40,"lengthMm":80,"kind":"polygon","outer":[[0,0],[80,0],[80,30],[60,40],[0,40]],"holes":[[[40,10],[50,10],[50,20],[40,20]]]});
             }

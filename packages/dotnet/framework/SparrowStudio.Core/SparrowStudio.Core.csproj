@@ -7,7 +7,7 @@
     <PlatformTarget>x64</PlatformTarget>
     <AssemblyName>SparrowStudio.Core</AssemblyName>
     <RootNamespace>SparrowStudio.Core</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <PackageId>SparrowStudio.Core.Framework</PackageId>
     <Description>Sparrow Studio app models and Windows x64 native solver for .NET Framework 4.7.2.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -20,6 +20,9 @@
     <PackageReference Include="Newtonsoft.Json" Version="[13.0.1]" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
     <None Include="../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../include/sparrow_dotnet_native.h" Pack="true" PackagePath="include/" />
+    <None Include="../../../../LICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../../../web/public/THIRD_PARTY_NOTICES.txt" Pack="true" PackagePath="/" />
     <None Include="$(NativeLibraryPath)" Link="sparrow_dotnet_native.dll"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
           Pack="true" PackagePath="runtimes/win-x64/native/" />
@@ -34,6 +37,9 @@
       <ReferenceDistribution Include="$(TargetDir)Newtonsoft.Json.dll" />
       <ReferenceDistribution Include="$(NativeLibraryPath)" />
       <ReferenceDistribution Include="$(MSBuildThisFileDirectory)..\README.md" />
+      <ReferenceDistribution Include="$(MSBuildThisFileDirectory)..\..\include\sparrow_dotnet_native.h" />
+      <ReferenceDistribution Include="$(MSBuildThisFileDirectory)..\..\..\..\LICENSE" />
+      <ReferenceDistribution Include="$(MSBuildThisFileDirectory)..\..\..\..\web\public\THIRD_PARTY_NOTICES.txt" />
     </ItemGroup>
     <MakeDir Directories="$(DistributionDirectory)" />
     <Copy SourceFiles="@(ReferenceDistribution)" DestinationFolder="$(DistributionDirectory)" SkipUnchangedFiles="true" />
