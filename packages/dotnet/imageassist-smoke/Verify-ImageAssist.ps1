@@ -1,4 +1,4 @@
-param([string]$AppDirectory = 'D:/work files/2026-10-26/ImageAssist_0527_Standard_test/bin/x64/Debug')
+param([string]$AppDirectory = 'D:/work_files/2026-10-26/ImageAssist_0527_Standard_test/bin/x64/Debug')
 $ErrorActionPreference = 'Stop'
 Push-Location $AppDirectory
 try {
@@ -62,4 +62,38 @@ try {
         Assert ($a.Position.x -eq 100 -and $b.Position.x -eq 300) 'Cancelled operation mutated source images.'
     } finally {$source.Dispose()}
     Write-Output 'PASS actual ImageAssist command: cancellation leaves canvas unchanged'
+    $job=$commandType.GetProperty('Job',$flags).GetValue($command,$null)
+    $accepted=New-Object SparrowStudio.Core.Result
+    $accepted.Reason='UserStopped'; $accepted.Validation=New-Object SparrowStudio.Core.Validation
+    $accepted.Validation.Status='passed'; $accepted.Unplaced=[SparrowStudio.Core.UnplacedPart[]]@()
+    $accepted.UsedLengthMm=20
+    $sheets=New-Object 'System.Collections.Generic.List[SparrowStudio.Core.SheetResult]'
+    for($i=0;$i -lt 2;$i++){
+        $child=New-Object SparrowStudio.Core.Job; $child.Parts=[SparrowStudio.Core.Part[]]@($job.Parts[$i])
+        $child.Settings.MaterialWidthMm=11; $child.Settings.SheetLengthMm=11
+        $stock=New-Object SparrowStudio.Core.SheetStock; $stock.Id='legacy'; $stock.Name='Sheet'
+        $stock.Quantity=2; $stock.WidthMm=11; $stock.LengthMm=11
+        $child.Settings.SheetStock=$stock
+        $p=New-Object SparrowStudio.Core.Placement; $p.PartId=$job.Parts[$i].Id; $p.XMm=5; $p.YMm=5
+        $r=New-Object SparrowStudio.Core.Result; $r.Placements=[SparrowStudio.Core.Placement[]]@($p)
+        $r.UsedLengthMm=10; $r.Validation=New-Object SparrowStudio.Core.Validation; $r.Validation.Status='passed'
+        $sheet=New-Object SparrowStudio.Core.SheetResult; $sheet.Job=$child; $sheet.Result=$r; $sheets.Add($sheet)
+    }
+    $accepted.Placements=[SparrowStudio.Core.Placement[]]@(); $accepted.Sheets=$sheets.ToArray()
+    $solver=New-Object SparrowStudio.Core.NestingSolver; $check=$solver.Validate($job,$accepted)
+    Assert ($check.Status -eq 'passed') 'Stopped fixture must pass independent geometry validation.'
+    $accept=$commandType.GetMethod('AcceptResult',$flags)
+    $rejected=$false
+    try { $null=$accept.Invoke($command.PSObject.BaseObject,[object[]]@($accepted.PSObject.BaseObject,$check.PSObject.BaseObject,[Threading.CancellationToken]::None,$false)) }
+    catch { if ($_.FullyQualifiedErrorId -eq 'InvalidOperationException' -or $_.Exception.GetBaseException() -is [InvalidOperationException]) { $rejected=$true } else { throw } }
+    Assert $rejected 'UserStopped must require explicit dialog authorization.'
+    $null=$accept.Invoke($command.PSObject.BaseObject,[object[]]@($accepted.PSObject.BaseObject,$check.PSObject.BaseObject,[Threading.CancellationToken]::None,$true))
+    Assert ($a.Position.x -eq 100 -and $b.Position.x -eq 300) 'AcceptResult must not commit canvas.'
+    $command.Execute(); Assert ($a.Position.x -eq 5 -and $b.Position.x -eq 5) 'Authorized stopped result not applied.'
+    $command.Undo(); Assert ($a.Position.x -eq 100 -and $b.Position.x -eq 300) 'Stopped result undo failed.'
+    $accepted.Cancelled=$true; $rejected=$false
+    try { $null=$accept.Invoke($command.PSObject.BaseObject,[object[]]@($accepted.PSObject.BaseObject,$check.PSObject.BaseObject,[Threading.CancellationToken]::None,$true)) }
+    catch { if ($_.FullyQualifiedErrorId -eq 'InvalidOperationException' -or $_.Exception.GetBaseException() -is [InvalidOperationException]) { $rejected=$true } else { throw } }
+    Assert $rejected 'Cancelled native result must never be accepted as UserStopped.'
+    Write-Output 'PASS actual ImageAssist command: authorized current result, cancelled rejection and undo'
 } finally { Pop-Location }

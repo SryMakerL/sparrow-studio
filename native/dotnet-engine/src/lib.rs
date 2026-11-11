@@ -100,6 +100,8 @@ struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     sheet_insertion_warm_start_seconds: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    sheet_initial_search_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sheet_compression_seconds: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sheet_insertion_failures: Option<u32>,
@@ -316,15 +318,14 @@ fn validate(job: &Job) -> Result<(), String> {
             && s.sheet_stocks.is_none()
             && (s.clearance_mm as f32) >= (s.material_width_mm as f32))
         || s.sheet_length_mm.is_some_and(|v| !positive(v))
-        || !matches!(
-            s.time_limit_seconds,
-            None | Some(10 | 30 | 60 | 120 | 300 | 600)
-        )
+        || !matches!(s.time_limit_seconds, None | Some(1..=600))
         || !matches!(s.solver_preset.as_str(), "standard" | "fast")
         || s.sheet_count
             .is_some_and(|v| v == 0 || s.sheet_length_mm.is_none())
         || s.sheet_insertion_warm_start_seconds
             .is_some_and(|v| !(1..=600).contains(&v))
+        || s.sheet_initial_search_seconds
+            .is_some_and(|v| !v.is_finite() || !(0.1..=600.0).contains(&v))
         || s.sheet_compression_seconds
             .is_some_and(|v| !(1..=600).contains(&v))
         || s.sheet_insertion_failures
@@ -576,7 +577,7 @@ mod tests {
             ("materialWidthMm", json!(0)),
             ("clearanceMm", json!(-1)),
             ("sheetStocks", json!([])),
-            ("timeLimitSeconds", json!(1)),
+            ("timeLimitSeconds", json!(0)),
         ] {
             let mut j = job();
             j["settings"][path] = value;

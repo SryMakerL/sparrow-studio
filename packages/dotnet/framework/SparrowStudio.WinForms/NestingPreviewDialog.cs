@@ -21,7 +21,10 @@ namespace SparrowStudio.WinForms
         private readonly Label fallback = new Label();
         private CancellationTokenSource cancellation;
         private Task operation;
-        private Result candidate;
+        private Result candidate, currentRound, frozenCurrent;
+        private bool hasCurrentRound, stopRequested, discardRequested, nativeFinished;
+        public bool StoppedByUser { get; private set; }
+        public string ResultSelection { get; private set; }
         private bool ready, started, running, closePending, allowClose, canApply, initialNavigation, disposePending;
         private string initialDocument;
         private readonly System.Windows.Forms.Timer heartbeat = new System.Windows.Forms.Timer { Interval = 200 };
@@ -29,6 +32,8 @@ namespace SparrowStudio.WinForms
         private readonly System.Diagnostics.Stopwatch clock = new System.Diagnostics.Stopwatch();
         public Result Result { get; private set; }
         public Exception Error { get; private set; }
+        public Job EffectiveJob => CloneJob(job);
+        private static Job CloneJob(Job value) => JsonConvert.DeserializeObject<Job>(JsonConvert.SerializeObject(value, SparrowJson.CreateSettings()), SparrowJson.CreateSettings());
         public string UserDataFolder { get; set; }
         public NestingPreviewDialog(Job job)
         {
@@ -89,30 +94,92 @@ namespace SparrowStudio.WinForms
         private void Receive(object sender, CoreWebView2WebMessageReceivedEventArgs args)
         {
             if (args.Source != "about:blank") return;
-            string command;
-            try { var message = JObject.Parse(args.WebMessageAsJson); if (message.Count != 1 || message["type"] == null || message["type"].Type != JTokenType.String) return; command = (string)message["type"]; } catch (JsonException) { return; }
+            ReceiveMessage(args.WebMessageAsJson);
+        }
+        private void ReceiveMessage(string json)
+        {
+            JObject message;
+            try { message = JObject.Parse(json, new JsonLoadSettings { DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error }); } catch (JsonException) { return; }
+            if (message["type"]?.Type != JTokenType.String) return;
+            string command = (string)message["type"];
+            if (command == "start")
+            {
+                if (!ready || started || Error != null || message.Count != 2 || !(message["settings"] is JObject settings)) return;
+                if (!ApplyBudgetSettings(settings)) return;
+                started = true; running = true; cancellation = new CancellationTokenSource(); operation = RunAsync();
+                return;
+            }
+            if (message.Count != 1) return;
             switch (command)
             {
                 case "ready": if (!ready) { ready = true; Send(new { type = "job", job }); Publish(); } break;
-                case "start": if (ready && !started && Error == null) { started = true; running = true; cancellation = new CancellationTokenSource(); operation = RunAsync(); } break;
+                case "stop": StopCurrent(); break;
                 case "cancel": Cancel(); break;
-                case "apply": if (canApply && Error == null && !running && candidate != null && !closePending && !cancellation.IsCancellationRequested) { Result = candidate; allowClose = true; DialogResult = DialogResult.OK; Close(); } break;
+                case "apply": if (canApply && Error == null && !running && candidate != null && !closePending && !discardRequested && (StoppedByUser || !cancellation.IsCancellationRequested)) { Result = Clone(candidate); ResultSelection = StoppedByUser ? "CurrentRound" : "Best"; allowClose = true; DialogResult = DialogResult.OK; Close(); } break;
                 case "close": Close(); break;
             }
+        }
+        private bool ApplyBudgetSettings(JObject settings)
+        {
+            string[] fields = { "timeLimitSeconds", "sheetInitialSearchSeconds", "sheetInsertionWarmStartSeconds", "sheetCompressionSeconds", "sheetInsertionFailures" };
+            if (settings.Count != fields.Length || settings.Properties().Any(p => !fields.Contains(p.Name))) return false;
+            var total = settings[fields[0]];
+            if (total.Type != JTokenType.Null && (total.Type != JTokenType.Integer || !FiniteInRange(total, 1, 600))) return false;
+            var initial = settings[fields[1]];
+            if ((initial.Type != JTokenType.Float && initial.Type != JTokenType.Integer) || !FiniteInRange(initial, .1, 600)) return false;
+            for (int i = 2; i < fields.Length; i++)
+                if (settings[fields[i]].Type != JTokenType.Integer || !FiniteInRange(settings[fields[i]], 1, i == 4 ? 100 : 600)) return false;
+            job.Settings.TimeLimitSeconds = total.Type == JTokenType.Null ? (int?)null : (int)total;
+            job.Settings.SheetInitialSearchSeconds = (double)initial;
+            job.Settings.SheetInsertionWarmStartSeconds = (int)settings[fields[2]];
+            job.Settings.SheetCompressionSeconds = (int)settings[fields[3]];
+            job.Settings.SheetInsertionFailures = (int)settings[fields[4]];
+            return true;
+        }
+        private static bool FiniteInRange(JToken token, double min, double max)
+        {
+            double value = (double)token;
+            return !double.IsNaN(value) && !double.IsInfinity(value) && value >= min && value <= max;
         }
         private async Task RunAsync()
         {
             clock.Start(); phase = "启动原生求解"; Publish();
             try
             {
-                candidate = await Task.Run(async () =>
+                Result completed = null;
+                try
                 {
-                    using (var session = new NestingSession(job))
+                    completed = await Task.Run(async () =>
                     {
-                        var progress = new InlineProgress(snapshot => OnUi(() => Snapshot(snapshot)));
-                        return await session.RunAsync(progress, cancellation.Token).ConfigureAwait(false);
+                        using (var session = new NestingSession(job))
+                        {
+                            var progress = new InlineProgress(snapshot => OnUi(() => Snapshot(snapshot)));
+                            return await session.RunAsync(progress, cancellation.Token).ConfigureAwait(false);
+                        }
+                    });
+                }
+                catch (OperationCanceledException) when (stopRequested && !discardRequested) { }
+                nativeFinished = true;
+                if (stopRequested && !discardRequested && frozenCurrent != null && Error == null)
+                {
+                    phase = "正在截止 · 原生已退出，独立校验冻结快照"; Publish();
+                    var stoppedSnapshot = frozenCurrent;
+                    var frozenValidation = await Task.Run(() => new NestingSolver().Validate(job, stoppedSnapshot));
+                    if (discardRequested || closePending || Error != null) { candidate = null; phase = "已取消 · 未应用"; return; }
+                    int missing = Math.Max(0, job.Parts.Sum(p => p.Quantity) - PlacedCount(frozenCurrent));
+                    canApply = Covered(job, frozenCurrent, frozenValidation);
+                    StoppedByUser = true;
+                    if (canApply)
+                    {
+                        candidate = Clone(frozenCurrent);
+                        candidate.Reason = "UserStopped";
+                        phase = "已截止待应用 · 用户截止";
                     }
-                });
+                    else { candidate = null; phase = "截止快照未完整不可应用 · 缺件 " + missing + " 件（或几何校验未通过）"; }
+                    Send(new { type = "snapshot", current = frozenCurrent, stopped = true });
+                    return;
+                }
+                candidate = completed;
                 cancellation.Token.ThrowIfCancellationRequested();
                 phase = "独立几何校验"; Publish();
                 var validation = await Task.Run(() => new NestingSolver().Validate(job, candidate));
@@ -132,7 +199,11 @@ namespace SparrowStudio.WinForms
         }
         internal static bool Complete(Job job, Result result, Validation validation)
         {
-            if (result == null || result.Cancelled || !string.Equals(result.Reason, "Complete", StringComparison.OrdinalIgnoreCase) || validation == null || validation.Status != "passed" || result.Validation == null || result.Validation.Status != "passed" || result.Unplaced == null || result.Unplaced.Length != 0) return false;
+            return result != null && string.Equals(result.Reason, "Complete", StringComparison.OrdinalIgnoreCase) && Covered(job, result, validation);
+        }
+        internal static bool Covered(Job job, Result result, Validation validation)
+        {
+            if (result == null || result.Cancelled || validation == null || validation.Status != "passed" || result.Validation == null || result.Validation.Status != "passed" || result.Unplaced == null || result.Unplaced.Length != 0) return false;
             var sheets = result.Sheets ?? new[] { new SheetResult(job, result) };
             if (sheets.Length == 0) return false;
             foreach (var sheet in sheets)
@@ -148,21 +219,41 @@ namespace SparrowStudio.WinForms
         }
         private void Snapshot(SessionSnapshot snapshot)
         {
-            if (!running || IsDisposed) return;
-            Result current = null;
+            if (!running || IsDisposed || stopRequested || discardRequested) return;
             foreach (var item in snapshot.Events ?? new JObject[0])
             {
                 if (item["phase"] != null) phase = (string)item["phase"];
-                if ((string)item["type"] == "current-round" || (string)item["type"] == "candidate") current = item["result"]?.ToObject<Result>(JsonSerializer.Create(SparrowJson.CreateSettings()));
+                string type = (string)item["type"];
+                var value = item["result"];
+                if (type == "current-round" && value != null && value.Type != JTokenType.Null)
+                { currentRound = value.ToObject<Result>(JsonSerializer.Create(SparrowJson.CreateSettings())); hasCurrentRound = true; }
+                else if (type == "candidate" && !hasCurrentRound && job.Settings.SheetCount == 1 && value != null && value.Type != JTokenType.Null)
+                    currentRound = value.ToObject<Result>(JsonSerializer.Create(SparrowJson.CreateSettings()));
             }
-            Send(new { type = "snapshot", best = snapshot.Best, current, sequence = snapshot.Sequence, eventTypes = (snapshot.Events ?? new JObject[0]).Select(e => (string)e["type"]).ToArray() }); Publish();
+            Send(new { type = "snapshot", best = snapshot.Best, current = currentRound, sequence = snapshot.Sequence, eventTypes = (snapshot.Events ?? new JObject[0]).Select(e => (string)e["type"]).ToArray() }); Publish();
         }
-        private void Cancel() { if (running && cancellation != null) { cancellation.Cancel(); canApply = false; phase = "正在取消，等待原生会话安全退出…"; Publish(); } }
+        private static Result Clone(Result value) => JsonConvert.DeserializeObject<Result>(JsonConvert.SerializeObject(value, SparrowJson.CreateSettings()), SparrowJson.CreateSettings());
+        private static int PlacedCount(Result value) => value.Sheets != null ? value.Sheets.Sum(s => s?.Result?.Placements?.Length ?? 0) : value.Placements?.Length ?? 0;
+        private void StopCurrent()
+        {
+            if (!running || nativeFinished || stopRequested || discardRequested || closePending || currentRound == null || Error != null) return;
+            frozenCurrent = Clone(currentRound); stopRequested = true; canApply = false;
+            phase = "正在截止 · 保留当前轮，等待原生会话安全退出…";
+            Send(new { type = "snapshot", current = frozenCurrent, stopped = true });
+            cancellation.Cancel(); Publish();
+        }
+        private void Cancel()
+        {
+            discardRequested = true; stopRequested = false; frozenCurrent = null; candidate = null; Result = null; StoppedByUser = false; ResultSelection = null; canApply = false;
+            if (running && cancellation != null) { cancellation.Cancel(); phase = "正在取消，等待原生会话安全退出…"; }
+            else phase = "已取消 · 未应用";
+            Publish();
+        }
         private void ClosingPreview(object sender, FormClosingEventArgs args)
         {
             if (allowClose) return;
             Result = null; canApply = false;
-            if (running) { args.Cancel = true; closePending = true; Cancel(); } else { allowClose = true; DialogResult = DialogResult.Cancel; }
+            if (running) { args.Cancel = true; closePending = true; Cancel(); } else { Cancel(); allowClose = true; DialogResult = DialogResult.Cancel; }
         }
         private void Fail(Exception error)
         {
@@ -171,7 +262,7 @@ namespace SparrowStudio.WinForms
             if (ready) { Send(new { type = "error", message = error.Message }); Publish(); }
             else { fallback.Text = "Sparrow Studio 无法初始化\r\n\r\n" + error.Message + "\r\n\r\n请关闭此窗口。"; fallback.Visible = true; fallback.BringToFront(); }
         }
-        private void Publish() { Send(new { type = "state", running, started, canApply = canApply && !closePending, phase, elapsed = clock.Elapsed.TotalSeconds, budget = job.Settings.TimeLimitSeconds }); }
+        private void Publish() { Send(new { type = "state", running, started, stopping = stopRequested && running, stopped = StoppedByUser, canStop = running && !nativeFinished && currentRound != null && !stopRequested && !discardRequested && !closePending && Error == null, canApply = canApply && !closePending && !discardRequested, phase, elapsed = clock.Elapsed.TotalSeconds, budget = job.Settings.TimeLimitSeconds }); }
         private void Send(object message) { if (ready && !IsDisposed && browser.CoreWebView2 != null) browser.CoreWebView2.PostWebMessageAsJson(JsonConvert.SerializeObject(message, SparrowJson.CreateSettings())); }
         private void OnUi(Action action) { if (IsDisposed || Disposing) return; if (InvokeRequired) { try { BeginInvoke(action); } catch (InvalidOperationException) { } } else action(); }
         protected override void Dispose(bool disposing)

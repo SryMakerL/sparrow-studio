@@ -168,6 +168,22 @@ fn score(job: &Job, v: &Value) -> Vec<f64> {
     score
 }
 
+pub(crate) fn insertion_budget_ms(
+    settings: &Settings,
+    has_current: bool,
+    deadline: Option<Instant>,
+) -> f64 {
+    let seconds = if has_current {
+        f64::from(settings.sheet_insertion_warm_start_seconds.unwrap_or(10))
+    } else {
+        settings.sheet_initial_search_seconds.unwrap_or(2.5)
+    };
+    let budget = seconds * 1000.0;
+    budget.min(deadline.map_or(budget, |d| {
+        d.saturating_duration_since(Instant::now()).as_secs_f64() * 1000.0
+    }))
+}
+
 pub(crate) fn run(
     input: &str,
     seed: u64,
@@ -193,8 +209,15 @@ pub(crate) fn run(
             && (job.settings.material_width_mm <= job.settings.clearance_mm
                 || job.settings.sheet_length_mm.unwrap() <= job.settings.clearance_mm)
         {
-            return polygon::run(&job, None, seed, revision, 2500.0, &stopped)
-                .ok_or_else(|| "No valid initial placement could be constructed".into());
+            return polygon::run(
+                &job,
+                None,
+                seed,
+                revision,
+                insertion_budget_ms(&job.settings, false, deadline),
+                &stopped,
+            )
+            .ok_or_else(|| "No valid initial placement could be constructed".into());
         }
         let mut kernel = kernel::Kernel::new(job.clone())?;
         return kernel.step(&json!({"quantities":job.parts.iter().map(|p|p.quantity).collect::<Vec<_>>(),"mode":"continuous","budget_ms":job.settings.time_limit_seconds.map(|n|n*1000)}),seed,revision,cancel,send);
@@ -281,17 +304,8 @@ pub(crate) fn run(
                             let batch = low.saturating_add(step).min(high);
                             let mut trial = quantities.clone();
                             trial[i] = batch;
-                            let budget = if current.is_some() {
-                                job.settings
-                                    .sheet_insertion_warm_start_seconds
-                                    .unwrap_or(10) as f64
-                                    * 1000.0
-                            } else {
-                                2500.0
-                            };
-                            let budget = budget.min(deadline.map_or(budget, |d| {
-                                d.saturating_duration_since(Instant::now()).as_secs_f64() * 1000.0
-                            }));
+                            let budget =
+                                insertion_budget_ms(&job.settings, current.is_some(), deadline);
                             let mut child_trial = child.clone();
                             for (p, n) in child_trial.parts.iter_mut().zip(&trial) {
                                 p.quantity = *n;
@@ -410,11 +424,16 @@ pub(crate) fn run(
                             }
                             let mut next = entries.clone();
                             next.push(json!({"job":current_job,"result":result}));
-                            let pending = remaining.iter().zip(&quantities)
-                                .map(|(a, b)| a - b).collect::<Vec<_>>();
+                            let pending = remaining
+                                .iter()
+                                .zip(&quantities)
+                                .map(|(a, b)| a - b)
+                                .collect::<Vec<_>>();
                             let value = aggregate(&job, &next, &pending, seed, revision, started);
                             if value["validation"]["status"] == "passed" {
-                                send(json!({"type":"current-round","roundIndex":round,"result":value}));
+                                send(
+                                    json!({"type":"current-round","roundIndex":round,"result":value}),
+                                );
                                 if score(&job, &value) < score(&job, &best) {
                                     best = value;
                                     send(json!({"type":"candidate","result":best}));

@@ -55,6 +55,7 @@ namespace SparrowStudio.Core
         public SheetStock SheetStock { get; set; }
         public double? SheetLengthMm { get; set; }
         public int? SheetCount { get; set; }
+        public double? SheetInitialSearchSeconds { get; set; }
         public int? SheetCompressionSeconds { get; set; }
         public int? SheetInsertionWarmStartSeconds { get; set; }
         public int? SheetInsertionFailures { get; set; }
