@@ -1,8 +1,11 @@
-use geo::{Area, BooleanOps, Contains, Intersects, LineString, MultiPolygon, Polygon, TriangulateEarcut, Validation};
+use geo::{
+    Area, BooleanOps, Contains, Intersects, LineString, MultiPolygon, Polygon, TriangulateEarcut,
+    Validation,
+};
 use jagua_rs::entities::InferiorQualityZone;
-use jagua_rs::geometry::{DTransformation, OriginalShape};
 use jagua_rs::geometry::primitives::{Point, SPolygon};
 use jagua_rs::geometry::shape_modification::{ShapeModifyConfig, ShapeModifyMode};
+use jagua_rs::geometry::{DTransformation, OriginalShape};
 use jagua_rs::probs::spp::entities::{SPInstance, SPStockConstraints};
 use serde::Deserialize;
 
@@ -22,40 +25,64 @@ struct StockGeometry {
 
 pub(crate) fn parse(input: &str, height: f32) -> Result<Option<SPStockConstraints>, String> {
     let input: StockInput = serde_json::from_str(input).map_err(|e| e.to_string())?;
-    input.stock_geometry.map(|stock| stock.constraints(height)).transpose()
+    input
+        .stock_geometry
+        .map(|stock| stock.constraints(height))
+        .transpose()
 }
 
-pub(crate) fn apply(mut instance: SPInstance, constraints: Option<SPStockConstraints>) -> Result<SPInstance, String> {
+pub(crate) fn apply(
+    mut instance: SPInstance,
+    constraints: Option<SPStockConstraints>,
+) -> Result<SPInstance, String> {
     match constraints {
         Some(constraints) => {
-            if instance.base_strip.shape_modify_config.offset.is_some_and(|offset|
-                constraints.max_width <= 2.0 * offset || instance.base_strip.fixed_height <= 2.0 * offset) {
+            if instance
+                .base_strip
+                .shape_modify_config
+                .offset
+                .is_some_and(|offset| {
+                    constraints.max_width <= 2.0 * offset
+                        || instance.base_strip.fixed_height <= 2.0 * offset
+                })
+            {
                 return Err("Stock dimensions must exceed clearance".into());
             }
             // The imported area-based strip can be narrower than twice its edge
             // offset. Start finite stock at its full width before constructing it.
             instance.base_strip.set_width(constraints.max_width);
-            instance.with_stock_constraints(constraints).map_err(|e| e.to_string())
-        },
+            instance
+                .with_stock_constraints(constraints)
+                .map_err(|e| e.to_string())
+        }
         None => Ok(instance),
     }
 }
 
 impl StockGeometry {
     fn constraints(self, height: f32) -> Result<SPStockConstraints, String> {
-        if !height.is_finite() || height <= 0.0 || height > 100_000.0
-            || self.holes.len() > 500 {
+        if !height.is_finite() || height <= 0.0 || height > 100_000.0 || self.holes.len() > 500 {
             return Err("Invalid stock dimensions or geometry size".into());
         }
         let outer = ring(self.outer, height)?;
-        let max_width = outer.exterior().0.iter().map(|p| p.x as f32).fold(0.0, f32::max);
+        let max_width = outer
+            .exterior()
+            .0
+            .iter()
+            .map(|p| p.x as f32)
+            .fold(0.0, f32::max);
         if max_width <= 0.0 {
             return Err("Stock width must be positive".into());
         }
-        let bounds = Polygon::new(LineString::from(vec![
-            (0.0, 0.0), (f64::from(max_width), 0.0),
-            (f64::from(max_width), f64::from(height)), (0.0, f64::from(height)),
-        ]), vec![]);
+        let bounds = Polygon::new(
+            LineString::from(vec![
+                (0.0, 0.0),
+                (f64::from(max_width), 0.0),
+                (f64::from(max_width), f64::from(height)),
+                (0.0, f64::from(height)),
+            ]),
+            vec![],
+        );
         let mut forbidden = bounds.difference(&outer);
         for points in self.holes {
             let hole = ring(points, height)?;
@@ -71,11 +98,16 @@ impl StockGeometry {
             } else {
                 let triangles = polygon.earcut_triangles();
                 let area: f64 = triangles.iter().map(Area::unsigned_area).sum();
-                if (area - polygon.unsigned_area()).abs() > 1e-8 * polygon.unsigned_area().max(1.0) {
+                if (area - polygon.unsigned_area()).abs() > 1e-8 * polygon.unsigned_area().max(1.0)
+                {
                     return Err("Stock forbidden-region triangulation lost area".into());
                 }
                 for triangle in triangles {
-                    shapes.push(original(&LineString::from(vec![triangle.v1(), triangle.v2(), triangle.v3()]))?);
+                    shapes.push(original(&LineString::from(vec![
+                        triangle.v1(),
+                        triangle.v2(),
+                        triangle.v3(),
+                    ]))?);
                 }
             }
         }
@@ -90,15 +122,31 @@ fn ring(mut points: Vec<[f32; 2]>, height: f32) -> Result<Polygon<f64>, String> 
     if points.len() > 1 && points.first() == points.last() {
         points.pop();
     }
-    if points.len() < 3 || points.iter().any(|p|
-        !p[0].is_finite() || !p[1].is_finite()
-            || p[0] < 0.0 || p[0] > 100_000.0 || p[1] < 0.0 || p[1] > height) {
+    if points.len() < 3
+        || points.iter().any(|p| {
+            !p[0].is_finite()
+                || !p[1].is_finite()
+                || p[0] < 0.0
+                || p[0] > 100_000.0
+                || p[1] < 0.0
+                || p[1] > height
+        })
+    {
         return Err("Stock rings require at least 3 finite vertices within material bounds".into());
     }
-    let polygon = Polygon::new(LineString::from(points.into_iter()
-        .map(|p| (f64::from(p[0]), f64::from(p[1]))).collect::<Vec<_>>()), vec![]);
-    if !polygon.is_valid() || polygon.unsigned_area() <= 0.0
-        || polygon.exterior().0.windows(2).any(|p| p[0] == p[1]) {
+    let polygon = Polygon::new(
+        LineString::from(
+            points
+                .into_iter()
+                .map(|p| (f64::from(p[0]), f64::from(p[1])))
+                .collect::<Vec<_>>(),
+        ),
+        vec![],
+    );
+    if !polygon.is_valid()
+        || polygon.unsigned_area() <= 0.0
+        || polygon.exterior().0.windows(2).any(|p| p[0] == p[1])
+    {
         return Err("Stock rings must be simple nondegenerate polygons".into());
     }
     Ok(polygon)
@@ -110,28 +158,40 @@ mod tests {
 
     #[test]
     fn accepts_stock_outlines_above_previous_vertex_caps() {
-        let points: Vec<_> = (0..4).flat_map(|edge| (0..2501).map(move |i| {
-            let t = i as f32 * 100.0 / 2501.0;
-            match edge {
-                0 => [t, 0.0],
-                1 => [100.0, t],
-                2 => [100.0 - t, 100.0],
-                _ => [0.0, 100.0 - t],
-            }
-        })).collect();
-        let stock = StockGeometry { outer: points, holes: vec![] };
+        let points: Vec<_> = (0..4)
+            .flat_map(|edge| {
+                (0..2501).map(move |i| {
+                    let t = i as f32 * 100.0 / 2501.0;
+                    match edge {
+                        0 => [t, 0.0],
+                        1 => [100.0, t],
+                        2 => [100.0 - t, 100.0],
+                        _ => [0.0, 100.0 - t],
+                    }
+                })
+            })
+            .collect();
+        let stock = StockGeometry {
+            outer: points,
+            holes: vec![],
+        };
         stock.constraints(100.0).unwrap();
         assert!(ring(vec![[0.0, 0.0], [100_001.0, 0.0], [0.0, 1.0]], 100.0).is_err());
     }
 }
 
 fn original(ring: &LineString<f64>) -> Result<OriginalShape, String> {
-    let mut points: Vec<_> = ring.0.iter().map(|p| Point(p.x as f32, p.y as f32)).collect();
+    let mut points: Vec<_> = ring
+        .0
+        .iter()
+        .map(|p| Point(p.x as f32, p.y as f32))
+        .collect();
     if points.first() == points.last() {
         points.pop();
     }
     Ok(OriginalShape {
-        shape: SPolygon::new(points).map_err(|e| format!("Invalid stock forbidden polygon: {e}"))?,
+        shape: SPolygon::new(points)
+            .map_err(|e| format!("Invalid stock forbidden polygon: {e}"))?,
         pre_transform: DTransformation::empty(),
         modify_mode: ShapeModifyMode::Inflate,
         // Parts already receive the solver's half-clearance offset. Never offset

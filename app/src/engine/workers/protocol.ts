@@ -8,7 +8,9 @@ export type Start = Identity & { type: 'start'; document: Job; seed: string; thr
 export type SessionInit = Identity & { type: 'session-init'; document: Job; threads?: number; control?: SharedArrayBuffer };
 export type SessionStep = Identity & {
   type: 'session-step'; attemptId: number; seed: string; quantities: number[];
-  initialSnapshot?: number; retainSnapshot?: number; mode: 'search' | 'compress'; budgetMs: number | null;
+  initialSnapshot?: number; retainSnapshot?: number;
+  initialPlacement?: { used_length_mm: number; placements: { item_id: number; rotation: number; translation: [number, number] }[] };
+  mode: 'search' | 'compress'; budgetMs: number | null;
 };
 export type SessionCancel = { type: 'session-cancel'; attemptId: number };
 export type Placement = { item_id: number; transformation: { rotation: number; translation: [number, number] } };

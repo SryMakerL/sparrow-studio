@@ -55,7 +55,9 @@ namespace SparrowStudio.Core
         public SheetStock SheetStock { get; set; }
         public double? SheetLengthMm { get; set; }
         public int? SheetCount { get; set; }
-        public double? SheetCompressionSeconds { get; set; }
+        public double? SheetInitialSearchSeconds { get; set; }
+        public int? SheetCompressionSeconds { get; set; }
+        public int? SheetInsertionWarmStartSeconds { get; set; }
         public int? SheetInsertionFailures { get; set; }
         public string SolverPreset { get; set; } = "standard";
         public double MaterialWidthMm { get; set; } = 1000;
@@ -98,6 +100,9 @@ namespace SparrowStudio.Core
         public string Seed { get; set; }
         public double ElapsedSeconds { get; set; }
         public double UsedLengthMm { get; set; }
+        public string Reason { get; set; }
+        public bool Cancelled { get; set; }
+        public uint? SnapshotId { get; set; }
         public Placement[] Placements { get; set; }
         public Validation Validation { get; set; } = new Validation();
         public int? RoundIndex { get; set; }

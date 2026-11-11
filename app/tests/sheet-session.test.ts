@@ -151,6 +151,66 @@ it('keeps the last equal-width compression candidate as the next warm-start snap
   session.close();
 });
 
+it('does not dispatch a cold step when a warm-start snapshot is unavailable', async () => {
+  const steps: Record<string, unknown>[] = [];
+  class MockWorker {
+    onmessage?: (event: { data: unknown }) => void;
+    postMessage(message: Record<string, unknown>) {
+      if (message.type === 'session-init')
+        queueMicrotask(() => this.send({ type: 'session-ready' }));
+      if (message.type !== 'session-step') return;
+      steps.push(message);
+      queueMicrotask(() => {
+        this.send({
+          type: 'candidate',
+          attemptId: message.attemptId,
+          snapshotId: 10,
+          solution: {
+            strip_width: 10,
+            layout: {
+              placed_items: [{ item_id: 0, transformation: { rotation: 0, translation: [0, 0] } }],
+            },
+          },
+        });
+        this.send({ type: 'finished', attemptId: message.attemptId });
+      });
+    }
+    send(data: Record<string, unknown>) {
+      this.onmessage?.({ data: { ...data, runId: 1, documentRevision: 7 } });
+    }
+  }
+  vi.stubGlobal('Worker', MockWorker);
+  const job = catalog();
+  job.parts.unshift({ ...job.parts[0], id: 'unused-priority-part', quantity: 0 });
+  const session = new SheetWorkerSession(job, 7);
+  const initial = (await session.attempt(job))!;
+  initial.placements = initial.placements.map((placement) => ({
+    ...placement,
+    partId: job.parts[1].id,
+    xMm: 0.125,
+    yMm: 0.25,
+  }));
+  session.close();
+  const child = {
+    ...job,
+    parts: job.parts.map((part, index) => ({ ...part, quantity: index === 1 ? 2 : 0 })),
+  };
+  await expect(session.attempt(child, undefined, undefined, 1000, initial)).resolves.toBeDefined();
+  expect(steps).toHaveLength(2);
+  expect(steps[1]).toMatchObject({
+    initialSnapshot: undefined,
+    retainSnapshot: undefined,
+    mode: 'search',
+    initialPlacement: {
+      used_length_mm: initial.usedLengthMm,
+      placements: [{ item_id: 1, rotation: 0, translation: [0.125, 0.25] }],
+    },
+  });
+  await expect(session.attempt(job)).resolves.toBeDefined();
+  expect(steps).toHaveLength(3);
+  session.close();
+});
+
 it('hard-stops a stuck session and reinitializes without stale snapshot IDs', async () => {
   vi.useFakeTimers();
   const posted: Record<string, unknown>[] = [];

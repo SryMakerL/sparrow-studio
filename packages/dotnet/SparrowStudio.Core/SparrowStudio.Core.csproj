@@ -5,13 +5,14 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <PackageId>SparrowStudio.Core</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Description>Sparrow Studio app models and native nesting solver for .NET.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>
     <None Include="../README.md" Pack="true" PackagePath="/" />
+    <None Include="../include/sparrow_dotnet_native.h" Pack="true" PackagePath="include/" />
     <None Include="../../../LICENSE" Pack="true" PackagePath="/" />
     <None Include="../../../web/public/THIRD_PARTY_NOTICES.txt" Pack="true" PackagePath="/" />
     <None Include="../../../native/dotnet-engine/target/release/sparrow_dotnet_native.dll"

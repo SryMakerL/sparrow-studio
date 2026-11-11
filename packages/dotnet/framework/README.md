@@ -1,67 +1,78 @@
-# SparrowStudio.Core：.NET Framework 4.7.2 / C# 7.3
+# SparrowStudio.Core 0.2.0：.NET Framework 4.7.2 / C# 7.3
 
-此目录是独立兼容实现，不替换 `packages/dotnet/SparrowStudio.Core`，不要求升级旧 WinForms 客户项目。目标为 Windows x64、.NET Framework 4.7.2，程序集名称和命名空间均为 `SparrowStudio.Core`。
+Windows x64 原生排版调用层，不要求升级 WinForms 项目。命名空间与程序集为 `SparrowStudio.Core`，调用同一 Rust 原生内核，不依赖浏览器、Node 或 WASM。完整计算能力与边界见上级 `packages/dotnet/README.md`。
 
-## 构建与真实 smoke
+## 构建和分发
 
-在仓库根目录的 PowerShell 中执行：
+仓库根目录执行 `./packages/dotnet/build.ps1`，构建并测试原生库、现代 .NET、Framework 和 NuGet 消费者。也可单独执行：
 
 ```powershell
+cargo build --release --manifest-path native/dotnet-engine/Cargo.toml
 dotnet build packages/dotnet/framework/tests/SparrowStudio.Core.Framework.Smoke.csproj -c Release
 & ./packages/dotnet/framework/tests/bin/Release/net472/SparrowStudio.Core.Framework.Smoke.exe
 ```
 
-Framework EXE 必须直接运行，不能使用 `dotnet xxx.exe`。该 SDK 风格项目可由本机 .NET SDK 构建；`Microsoft.NETFramework.ReferenceAssemblies` 1.0.3 是微软官方编译期引用程序集包（PrivateAssets=all），在没有本机 4.7.2 targeting pack 时也能构建，不是运行时依赖。运行计算机须安装 .NET Framework 4.7.2 或兼容的较新 4.x 运行时。
+Framework EXE 直接运行，不能用 `dotnet xxx.exe`。构建使用 Microsoft.NETFramework.ReferenceAssemblies 1.0.3，消费者需 .NET Framework 4.7.2 或兼容的较新 4.x 运行时。
 
-原生 release DLL 必须已存在于 `native/dotnet-engine/target/release/sparrow_dotnet_native.dll`。项目只读取并复制此 DLL，不会修改或构建原生工程。
+直接引用目录 `packages/dotnet/framework/dist/Release/` 包含：
 
-构建 Core（或构建引用它的 smoke）会生成可直接引用分发目录：
+- `SparrowStudio.Core.dll`
+- `sparrow_dotnet_native.dll`
+- `Newtonsoft.Json.dll`（13.0.1）
+- README、LICENSE、THIRD_PARTY_NOTICES.txt
 
-```text
-packages/dotnet/framework/dist/Release/
-  SparrowStudio.Core.dll
-  sparrow_dotnet_native.dll
-  Newtonsoft.Json.dll
-  README.md
-```
+NuGet 包输出为 `packages/dotnet/artifacts/SparrowStudio.Core.Framework.0.2.0.nupkg`。旧 `packages.config` 项目可直接引用托管 DLL，再把原生 DLL 复制到 EXE 同目录。已有 Newtonsoft.Json 13.0.1 时复用。必须 x64，关闭 Prefer 32-bit。原生 DLL 的 PE 导入已确认依赖 VCRUNTIME140.dll 与 Windows Universal CRT，目标机需对应 x64 VC 运行库。此次不自动修改 ImageAssist 工程。
 
-Debug 构建对应 `dist/Debug/`。Core csproj 将 native DLL 配置为 CopyToOutputDirectory、CopyToPublishDirectory，并带有 NuGet `runtimes/win-x64/native/` 打包元数据；完整 NuGet 发布流程不在本目录范围内。
-
-## 旧 WinForms 接入
-
-1. 引用分发目录的 `SparrowStudio.Core.dll`。Newtonsoft.Json 必须为 NuGet **13.0.1**；客户工程已引用同版时复用其现有引用，避免重复引入。
-2. 将 `sparrow_dotnet_native.dll` 复制到 WinForms EXE 同一目录。托管 DLL 和 Newtonsoft.Json.dll 也须可由运行时解析（通常同目录）。只添加托管引用不会自动复制原生 DLL，旧项目需显式设置其复制属性。
-3. 客户程序须以 **x64** 运行；不要开启 Prefer 32-bit。库使用 `Environment.Is64BitProcess` 和 Windows 平台检查，拒绝 32 位或非 Windows 进程。原生包仅提供 Windows x64，不包含 ARM64 原生库。原生 release DLL 若有额外系统依赖，由运行环境提供。
+## 调用
 
 ```csharp
 using Newtonsoft.Json;
 using SparrowStudio.Core;
 
-// json 为 Sparrow Studio app 的 Job JSON，而不是引擎 items/strip_height 格式。
 Job job = JsonConvert.DeserializeObject<Job>(json, SparrowJson.CreateSettings());
 var solver = new NestingSolver();
-Result result = await solver.SolveAsync(job, cancellationToken, seed: 42, documentRevision: 1);
+Result result = await solver.SolveBestAsync(job, cancellationToken, seed: 42, documentRevision: 1);
+if (result.Sheets != null)
+{
+    foreach (SheetResult sheet in result.Sheets)
+        foreach (Placement p in sheet.Result.Placements)
+            Console.WriteLine(p.PartId + ": " + p.XMm + ", " + p.YMm);
+}
+Validation check = solver.Validate(job, result);
 string resultJson = JsonConvert.SerializeObject(result, SparrowJson.CreateSettings());
 ```
 
-WinForms 中应在 async 事件处理器内 await，不要用 `.Result` 阻塞 UI。取消会抛出 `OperationCanceledException`；原生输入或求解错误通过 `NestingException` 返回。
+输入为 app Job，不是引擎 items/strip_height 格式或完整 UI 文档。坐标单位 mm，角度为度；XMm/YMm 是原始轮廓刚体变换的平移，不保证等于旋转后包围盒位置。默认旋转 0°/180°。多板 `CopyIndex` 在对应板 job 内编号。
 
-## 模型、JSON 与 API 差异
+## 能力
 
-- `PartSource`、`RotationRule`、`Part`、`SheetStock`、`JobSettings`、`Job`、`Placement`、`Validation`、`Result`、`SheetResult`、`UnplacedPart` 的公共属性名称、类型与默认值尽量保持原版。`SheetResult(Job, Result)` 和 `UnplacedPart(string, int)` 构造函数保留，并增加无参构造便于普通 class/JSON 使用。
-- record/init/required 改为 C# 7.3 普通 sealed class/get/set/数组；没有 record 值相等、with、自动解构，也没有 required 编译期检查。原版 nullable 引用类型在此版本为可取 null 的普通引用类型。缺失必要输入仍由 native 校验，不以默认几何或零值掩盖。
-- `NestingSolver.SolveAsync(Job, CancellationToken, ulong?, uint)` 与 `NestingException(string)` 保持调用方式；默认 revision=1。未提供 seed 时使用 Framework 的 RandomNumberGenerator.Create().GetBytes(byte[])。
-- `SparrowJson.CreateOptions()` 替换为 **`SparrowJson.CreateSettings()`**，返回 Newtonsoft.Json.JsonSerializerSettings；使用 JsonConvert 而非 System.Text.Json。所有属性为 camelCase、忽略 null，Newtonsoft 默认读取时不区分属性名大小写；`XMm`/`YMm` 显式 `[JsonProperty("xMm")]` / `[JsonProperty("yMm")]`，避免缩写命名偏差。
-- Newtonsoft.Json PackageReference 精确固定 `[13.0.1]`，分发 DLL 取自还原后的该版本。无其他运行时托管包依赖。
+- 条带；有限矩形／异形板及禁放孔；多类型库存数量、库存优先级、零件优先级与数量；离散／连续旋转、间距、随机种子。
+- `SheetStocks` 或旧 `SheetLengthMm/SheetCount` 多板调度；输出 `Sheets` 与 `Unplaced`，数量守恒。
+- `SheetCompressionSeconds`、`SheetInsertionWarmStartSeconds`、`SheetInsertionFailures` 控制阶段预算；时间限制与 app 的 10/30/60/120/300/600/null 一致。
+- 独立几何校验、持久单板快照、后台会话和进度事件。
+- 零件孔不用于孔内套料；板孔是真实禁区。不包含 SVG/DXF/PDF 导入导出、画布或项目持久化。
 
-## 原生 ABI 与生命周期
+## 取消和会话
 
-仍使用 Cdecl 五个函数：`sparrow_cancel_create`、`sparrow_cancel_request`、`sparrow_cancel_free`、`sparrow_solve_json`、`sparrow_string_free`。输入使用 Encoding.UTF8 + Marshal.AllocHGlobal + 尾随 NUL，P/Invoke 接收 IntPtr，不依赖 Framework 对 LPUTF8Str 的支持；输出手动扫描 NUL，再复制并严格 UTF-8 解码。
+`SolveAsync` 保持原取消异常行为。新增 `SolveBestAsync` 在运行中取消后保留原生最佳结果；通过 `Result.Reason`、`Unplaced` 和 `Validation` 判断结束状态。调用前已取消仍抛 `OperationCanceledException`。错误输入／原生错误抛 `NestingException`。
 
-Task.Run 执行同步 native 求解。SafeHandle 持有取消状态，CancellationTokenRegistration 在 native 调用期间存活；先释放响应和输入缓冲区，再 Dispose registration（等待正在执行的回调），最后释放 SafeHandle。取消优先抛 OperationCanceledException，不把原生 cancelled 错误转换成普通 NestingException。
+```csharp
+using (var session = new NestingSession(job, documentRevision: 7))
+{
+    var progress = new Progress<SessionSnapshot>(snapshot =>
+        Console.WriteLine(snapshot.Status + " / " + snapshot.Sequence));
+    Result best = await session.RunAsync(progress, cancellationToken, seed: 42);
+}
+```
 
-native 当前限制仍保留：单板库存，多板 sheetStocks 等不支持；validation.status 的 pending 不是几何验证已通过。
+也可用 Start/Poll/Cancel 自行驱动。Events 是 JObject[]，Best 是当前保留结果。事件队列上限 256 条，Poll 消费而非广播，新操作清空上一操作未消费的事件；慢消费者可能丢失事件。运行中／错误快照的 Best 不能单独视为本轮已成功，须检查 Status、Error 和 Validation。RunAsync 期间不要另行 Poll 分走进度。底层 StepAsync(JObject, ulong?) 接收 quantities、mode、budget_ms、initial_snapshot、retain_snapshot；仅用于无 aggregate 的单板 catalog。未知／过期 snapshot 明确报错。
 
-## smoke 覆盖
+时间截止和取消是协作式；DLL 不强杀线程。Dispose 请求取消并移除会话，原生在途操作自行持有生命周期；等待运行任务结束后再卸载库。不要用 `.Result` 阻塞 UI。
 
-`tests/Program.cs` 是 net472/C# 7.3 x64 可执行项目，不使用测试框架包。它真实调用 release native DLL，检查十个矩形的完整放置、唯一 copyIndex、seed/revision、中文及 Unicode partId 的 UTF-8 往返、有限坐标、app Job JSON 输入、xMm/yMm 精确 JSON 名及坐标往返、预取消、非法尺寸的 native 错误、运行中取消。任一断言失败返回非零退出码。
+## ABI 和模型
+
+Cdecl；UTF-8 输入手工分配，尾随 NUL；返回串由专用函数释放。保留五个旧导出，增加 session create/start/step/poll/cancel/free 及 validate。整数 session ID 不是指针。
+
+Framework 使用普通 sealed class/get/set/数组，不提供现代 record 的 with/required。JSON 使用 camelCase、忽略 null，坐标显式标注 xMm/yMm。Newtonsoft.Json 精确固定 13.0.1；无其他托管运行时包依赖。
+
+Smoke 真实调用 release DLL，覆盖 Unicode、坐标和 revision/seed、独立校验、取消、多板数量守恒、原生会话及篡改结果拒绝。测试失败返回非零；当前结果以本次执行日志为准。

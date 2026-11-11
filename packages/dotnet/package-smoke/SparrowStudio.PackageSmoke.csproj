@@ -9,7 +9,7 @@
     <RestoreSources>$(MSBuildThisFileDirectory)../artifacts</RestoreSources>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="SparrowStudio.Core" Version="0.1.0" />
+    <PackageReference Include="SparrowStudio.Core" Version="0.2.0" />
     <Compile Include="../../../examples/dotnet-console/Program.cs" Link="Program.cs" />
   </ItemGroup>
 </Project>

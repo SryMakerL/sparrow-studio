@@ -28,4 +28,6 @@ Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions(Spa
 {
     WriteIndented = true,
 }));
-Console.WriteLine("求解完成。Validation=pending：原生求解成功不替代 app 的独立几何校验。");
+if (result.Validation.Status != "passed")
+    throw new InvalidOperationException("独立几何校验未通过：" + string.Join("; ", result.Validation.Errors));
+Console.WriteLine("求解完成，原生独立几何校验通过。");

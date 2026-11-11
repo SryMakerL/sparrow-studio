@@ -100,8 +100,9 @@ export function SettingsView() {
                             }
                           />
                           <p className="muted">
-                            Budget for each warm-start insertion attempt. Cold fallback still uses
-                            2.5 seconds. The total time limit takes priority.
+                            Each insertion uses the latest validated layout without cold-start
+                            fallback. Initial sheet construction uses 2.5 seconds. Attempts may
+                            finish early; the total time limit takes priority.
                           </p>
                           <SheetSettingInput
                             label="Consecutive insertion failures before changing sheets"
@@ -223,10 +224,10 @@ function SettingsExplanation({ item }: { item: Item }) {
           In sheet mode, the selected time is the total search budget for all sheets. Each sheet
           alternates insertion, timed compression (default: 10 seconds), and insertion again. After
           the configured number of consecutive insertion failures (default: 3), the solver moves to
-          the next sheet. A successful insertion resets the failure count. If all parts fit on one
-          sheet, compression continues in configured-duration slices until the total deadline or
-          manual Stop; in Automatic mode it continues until Stop. If several sheets are needed, the
-          last sheet is compressed once when the remaining parts are placed. The same flow applies
+          the next sheet. A successful insertion resets the failure count. Once all remaining parts
+          are placed, the final sheet is compressed for the configured compression duration multiplied
+          by the insertion failure limit, including when everything fits on one sheet. The total
+          deadline and manual Stop take priority over this finishing budget. The same flow applies
           to every rotation rule, including continuous rotations. The total time limit and manual
           Stop can interrupt any stage, so a short total budget may expire before later sheets are
           processed. The best validated layout found so far is kept.

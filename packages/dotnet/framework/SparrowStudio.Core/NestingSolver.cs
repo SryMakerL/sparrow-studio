@@ -23,6 +23,30 @@ namespace SparrowStudio.Core
             return Task.Run(() => Solve(json, actualSeed, documentRevision, cancellationToken));
         }
 
+        public Task<Result> SolveBestAsync(Job job, CancellationToken cancellationToken = default(CancellationToken),
+            ulong? seed = null, uint documentRevision = 1)
+        {
+            if (job == null) throw new ArgumentNullException(nameof(job));
+            if (Environment.OSVersion.Platform != PlatformID.Win32NT || !Environment.Is64BitProcess)
+                throw new PlatformNotSupportedException("This package includes the Windows x64 native solver only.");
+            cancellationToken.ThrowIfCancellationRequested();
+            string json = JsonConvert.SerializeObject(job, SparrowJson.CreateSettings());
+            ulong actualSeed = seed ?? CreateSeed();
+            return Task.Run(() => Solve(json, actualSeed, documentRevision, cancellationToken, true));
+        }
+
+        public Validation Validate(Job job, Result result)
+        {
+            if (job == null) throw new ArgumentNullException(nameof(job));
+            if (result == null) throw new ArgumentNullException(nameof(result));
+            if (Environment.OSVersion.Platform != PlatformID.Win32NT || !Environment.Is64BitProcess)
+                throw new PlatformNotSupportedException("This package includes the Windows x64 native solver only.");
+            using (var input = new Utf8Input(JsonConvert.SerializeObject(job, SparrowJson.CreateSettings())))
+            using (var output = new Utf8Input(JsonConvert.SerializeObject(result, SparrowJson.CreateSettings())))
+                return NativeSessionJson.Read(NativeSessionMethods.Validate(input.Pointer, output.Pointer))
+                    .ToObject<Validation>(JsonSerializer.Create(SparrowJson.CreateSettings()));
+        }
+
         private static ulong CreateSeed()
         {
             byte[] bytes = new byte[sizeof(ulong)];
@@ -31,7 +55,8 @@ namespace SparrowStudio.Core
             return BitConverter.ToUInt64(bytes, 0);
         }
 
-        private static Result Solve(string json, ulong seed, uint revision, CancellationToken cancellationToken)
+        private static Result Solve(string json, ulong seed, uint revision, CancellationToken cancellationToken,
+            bool preserveBestOnCancellation = false)
         {
             cancellationToken.ThrowIfCancellationRequested();
             using (CancellationHandle cancel = NativeMethods.CreateCancellation())
@@ -49,7 +74,7 @@ namespace SparrowStudio.Core
                         Marshal.Copy(bytes, 0, input, bytes.Length);
                         Marshal.WriteByte(input, bytes.Length, 0);
                         response = NativeMethods.SolveJson(input, seed, revision, cancel);
-                        cancellationToken.ThrowIfCancellationRequested();
+                        if (!preserveBestOnCancellation) cancellationToken.ThrowIfCancellationRequested();
                         if (response == IntPtr.Zero)
                             throw new InvalidOperationException("The native solver returned no response.");
                         string text = ReadUtf8(response);

@@ -75,7 +75,17 @@ it('initializes WASM and the thread pool once for repeated session steps', async
       seed: '1',
       mode: 'compress',
       budgetMs: 10,
+      initialPlacement: {
+        used_length_mm: 10.125,
+        placements: [{ item_id: 0, rotation: 90, translation: [0.125, 0.25] }],
+      },
     });
+  expect(JSON.parse(step.mock.calls[0][0])).toMatchObject({
+    initial_placement: {
+      used_length_mm: 10.125,
+      placements: [{ item_id: 0, rotation: 90, translation: [0.125, 0.25] }],
+    },
+  });
   expect(defaultInit).toHaveBeenCalledTimes(1);
   expect(poolInit).toHaveBeenCalledTimes(1);
   expect(construct).toHaveBeenCalledTimes(1);

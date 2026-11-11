@@ -20,6 +20,7 @@ use wasm_bindgen::prelude::*;
 struct Request {
     quantities: Vec<usize>,
     initial_snapshot: Option<u32>,
+    initial_placement: Option<warm_start::InitialPlacement>,
     retain_snapshot: Option<u32>,
     mode: Mode,
     budget_ms: Option<f64>,
@@ -180,6 +181,21 @@ impl SheetSession {
             }
             problem.change_strip_width(instance.stock_constraints.as_ref().unwrap().max_width);
             LBFBuilder::from_problem(problem, rng, LBF_SAMPLE_CONFIG)
+        } else if let Some(initial) = &request.initial_placement {
+            let input = warm_start::Input {
+                stock_length: None,
+                initial_placement: Some(initial.clone()),
+            };
+            let solution = warm_start::construct(&instance, &input, rng)
+                .map_err(|error| {
+                    if error.starts_with("Warm start insertion failed:") {
+                        error
+                    } else {
+                        format!("Warm-start restoration failed: {error}")
+                    }
+                })?
+                .expect("initial placement must produce a warm-start solution");
+            return Ok((instance, solution));
         } else {
             LBFBuilder::new(instance.clone(), rng, LBF_SAMPLE_CONFIG)
         };
