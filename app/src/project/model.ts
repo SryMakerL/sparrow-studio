@@ -1,5 +1,6 @@
 import { normalizeSheetStocks, stockArea, stockGeometryKey, usedStockArea } from '../engine/stock';
-import type { SheetStock } from '../engine/model';
+import type { SheetStock, SheetCycleBudget } from '../engine/model';
+import { DEFAULT_SHEET_CYCLE_BUDGET, normalizeSheetCycleBudget } from '../engine/sheetCycleBudget';
 import {
   MAX_SOLVER_THREADS,
   LIMITS,
@@ -56,14 +57,45 @@ export type MachinePreset = { id: string; name: string; gapMm: number };
 export type SolveWith = 'local';
 /** 0 lets the solver choose. */
 export type Threads =
-  | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
-  | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16
-  | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24
-  | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32;
+  | 0
+  | 1
+  | 2
+  | 3
+  | 4
+  | 5
+  | 6
+  | 7
+  | 8
+  | 9
+  | 10
+  | 11
+  | 12
+  | 13
+  | 14
+  | 15
+  | 16
+  | 17
+  | 18
+  | 19
+  | 20
+  | 21
+  | 22
+  | 23
+  | 24
+  | 25
+  | 26
+  | 27
+  | 28
+  | 29
+  | 30
+  | 31
+  | 32;
 export type SolverSettings = {
+  sheetCycleBudget: SheetCycleBudget;
   solveWith: SolveWith;
   timeLimitSeconds: TimeLimit;
-  sheetCompressionSeconds: number;
+  /** @deprecated Compatibility only; ignored by the solver. */
+  sheetCompressionSeconds?: number;
   sheetInsertionWarmStartSeconds: number;
   sheetInsertionFailures: number;
   preset: Preset;
@@ -98,9 +130,9 @@ export type ProjectDocument = {
 export const TIME_LIMITS: TimeLimit[] = [null, 10, 30, 60, 120, 300, 600];
 
 export const DEFAULT_SOLVER_SETTINGS: SolverSettings = {
+  sheetCycleBudget: { ...DEFAULT_SHEET_CYCLE_BUDGET },
   solveWith: 'local',
   timeLimitSeconds: null,
-  sheetCompressionSeconds: 10,
   sheetInsertionWarmStartSeconds: 10,
   sheetInsertionFailures: 3,
   preset: 'standard',
@@ -122,7 +154,10 @@ export function newProject(name: string, machine: MachinePreset = newMachine()):
     stock: { packing: 'strip', strip: { id: newId(), name: 'Material strip', widthMm: 1000 } },
     machines: [copy],
     machineId: copy.id,
-    settings: { ...DEFAULT_SOLVER_SETTINGS },
+    settings: {
+      ...DEFAULT_SOLVER_SETTINGS,
+      sheetCycleBudget: { ...DEFAULT_SOLVER_SETTINGS.sheetCycleBudget },
+    },
     solutions: [],
   };
 }
@@ -143,9 +178,9 @@ export function projectJob(project: ProjectDocument): Job {
       materialWidthMm: project.stock.strip.widthMm,
       clearanceMm: activeMachine(project).gapMm,
       timeLimitSeconds: project.settings.timeLimitSeconds,
-      sheetCompressionSeconds: project.settings.sheetCompressionSeconds,
       sheetInsertionWarmStartSeconds: project.settings.sheetInsertionWarmStartSeconds,
       sheetInsertionFailures: project.settings.sheetInsertionFailures,
+      sheetCycleBudget: normalizeSheetCycleBudget(project.settings.sheetCycleBudget),
       ...(project.stock.packing === 'sheets'
         ? {
             sheetLengthMm: project.stock.lengthMm,
@@ -190,19 +225,13 @@ export function startBlockers(project: ProjectDocument): string[] {
   const copies = copyCount(project.parts);
   if (!project.parts.length) reasons.push('Import parts to nest.');
   else if (copies === 0) reasons.push('Give at least one part a quantity above zero.');
-  if (project.parts.some(part => !Number.isSafeInteger(part.quantity) || part.quantity < 0))
+  if (project.parts.some((part) => !Number.isSafeInteger(part.quantity) || part.quantity < 0))
     reasons.push('Set nonnegative safe-integer part quantities.');
   if (!Number.isFinite(width) || width <= 0 || width > LIMITS.extent)
     reasons.push('Set a strip width in the Sheets tab.');
   if (!Number.isFinite(gap) || gap < 0) reasons.push('Set a valid gap in the Machine tab.');
   else if (project.stock.packing === 'strip' && Number.isFinite(width) && gap >= width)
     reasons.push('The gap must be smaller than the strip width.');
-  if (
-    !Number.isInteger(project.settings.sheetCompressionSeconds) ||
-    project.settings.sheetCompressionSeconds < 1 ||
-    project.settings.sheetCompressionSeconds > 600
-  )
-    reasons.push('Set a sheet compression duration from 1 to 600 seconds in Settings.');
   if (
     !Number.isInteger(project.settings.sheetInsertionWarmStartSeconds) ||
     project.settings.sheetInsertionWarmStartSeconds < 1 ||
@@ -215,6 +244,11 @@ export function startBlockers(project: ProjectDocument): string[] {
     project.settings.sheetInsertionFailures > 100
   )
     reasons.push('Set consecutive sheet insertion failures from 1 to 100 in Settings.');
+  try {
+    normalizeSheetCycleBudget(project.settings.sheetCycleBudget);
+  } catch (error) {
+    reasons.push(`${error instanceof Error ? error.message : String(error)} Check Settings.`);
+  }
   if (
     !Number.isInteger(project.settings.threads) ||
     project.settings.threads < 0 ||
@@ -234,10 +268,7 @@ export function startBlockers(project: ProjectDocument): string[] {
       project.stock.lengthMm > LIMITS.extent
     )
       reasons.push('Set a valid sheet length in the Sheets tab.');
-    if (
-      !Number.isSafeInteger(project.stock.quantity) ||
-      project.stock.quantity < 1
-    )
+    if (!Number.isSafeInteger(project.stock.quantity) || project.stock.quantity < 1)
       reasons.push('Set a positive safe-integer sheet quantity.');
   }
   return reasons;

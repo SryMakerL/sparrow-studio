@@ -50,6 +50,7 @@ fn instance(holes: Vec<OriginalShape>) -> SPInstance {
         Strip::new(10.0, config, ShapeModifyConfig::default(), 10.0).unwrap(),
     )
     .with_stock_constraints(SPStockConstraints {
+        boards: vec![],
         max_width: 10.0,
         holes: InferiorQualityZone::new(0, holes).unwrap(),
     })
@@ -213,6 +214,7 @@ fn finite_limit_and_unconstrained_snapshot_rejected() {
             .is_err()
     );
     let invalid = SPStockConstraints {
+        boards: vec![],
         max_width: f32::INFINITY,
         holes: InferiorQualityZone::new(0, vec![]).unwrap(),
     };
@@ -228,6 +230,7 @@ fn stock_holes_outside_root_survive_width_roundtrip() {
     let template = instance(vec![]);
     let inst = SPInstance::new(template.items, template.base_strip)
         .with_stock_constraints(SPStockConstraints {
+            boards: vec![],
             max_width: 1000.0,
             holes: InferiorQualityZone::new(
                 0,
@@ -320,6 +323,7 @@ fn invalid_stock_width_limits_rejected() {
     for max_width in [0.0, -1.0, f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 9.0] {
         let result = SPInstance::new(template.items.clone(), template.base_strip)
             .with_stock_constraints(SPStockConstraints {
+                boards: vec![],
                 max_width,
                 holes: InferiorQualityZone::new(0, vec![]).unwrap(),
             });

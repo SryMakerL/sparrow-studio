@@ -72,12 +72,15 @@ export function validate(doc: Job, result: Result, serialized?: WorldPart[]): Va
     if (doc.settings.sheetCount !== undefined)
       throw Error('A multi-sheet job requires a sheet aggregate.');
     doc = normalizeJob(doc);
+    const extentLimit = doc.settings.virtualBoards ? 10_000_000 : LIMITS.extent;
     if (
       !Number.isFinite(result.usedLengthMm) ||
       result.usedLengthMm <= 0 ||
-      result.usedLengthMm > LIMITS.extent
+      result.usedLengthMm > extentLimit
     )
-      throw Error('Used length must be finite, positive, and at most 100,000 mm.');
+      throw Error(
+        `Used length must be finite, positive, and at most ${extentLimit.toLocaleString('en-US')} mm.`,
+      );
     if (
       doc.settings.sheetLengthMm !== undefined &&
       result.usedLengthMm > doc.settings.sheetLengthMm + POLICY.linearMm
@@ -144,7 +147,24 @@ export function validate(doc: Job, result: Result, serialized?: WorldPart[]): Va
         )
           throw Error('Serialized contours differ from the rigidly transformed input geometry.');
       }
-      normalizePart({ ...original, outer: p.outer, holes: p.holes });
+      if (doc.settings.virtualBoards) {
+        const origin = bounds(p.outer);
+        const local = (ring: Ring): Ring => ring.map(([x, y]) => [x - origin[0], y - origin[1]]);
+        normalizePart({ ...original, outer: local(p.outer), holes: p.holes.map(local) });
+        const contained = doc.settings.virtualBoards.some((board) => {
+          const outside = polygonClipping.difference([p.outer], [board.outer, ...board.holes]);
+          return (
+            outside.reduce(
+              (sum, polygon) =>
+                sum +
+                Math.abs(area(polygon[0])) -
+                polygon.slice(1).reduce((holes, ring) => holes + Math.abs(area(ring)), 0),
+              0,
+            ) <= POLICY.overlapMm2
+          );
+        });
+        if (!contained) v.errors.push('Part must be completely contained in one physical board.');
+      } else normalizePart({ ...original, outer: p.outer, holes: p.holes });
       const stock = doc.settings.sheetStock;
       if (stock?.kind === 'polygon') {
         const outside = polygonClipping.difference([p.outer], [stock.outer, ...stock.holes]);

@@ -79,6 +79,42 @@ const layout = (job: Job, x = 0, y = 0): Result => ({
   },
 });
 
+const virtualLayout = (job: Job, limits?: number[]): Result | undefined => {
+  expect(job.settings.sheetStock).toBeUndefined();
+  expect(job.settings.sheetCount).toBeUndefined();
+  const boards = job.settings.virtualBoards!;
+  expect(boards.length).toBeGreaterThan(0);
+  const placements: Result['placements'] = [];
+  const part = job.parts[0];
+  const size = part.outer[1][0];
+  for (const [index, board] of boards.entries()) {
+    const x = Math.min(...board.outer.map(([x]) => x));
+    const y = Math.min(...board.outer.map(([, y]) => y));
+    const right = Math.max(...board.outer.map(([x]) => x));
+    const top = Math.max(...board.outer.map(([, y]) => y));
+    if (top - y < size) continue;
+    const capacity = Math.min(
+      Math.floor((right - x + job.settings.clearanceMm) / (size + job.settings.clearanceMm)),
+      limits?.[index] ?? Infinity,
+    );
+    for (let copy = 0; copy < capacity && placements.length < part.quantity; copy++) {
+      placements.push({
+        partId: part.id,
+        copyIndex: placements.length,
+        xMm: x + copy * (size + job.settings.clearanceMm),
+        yMm: y,
+        angleDeg: 0,
+      });
+    }
+  }
+  if (placements.length !== part.quantity) return undefined;
+  return {
+    ...layout(job),
+    placements,
+    usedLengthMm: Math.max(...placements.map((placement) => placement.xMm + size)),
+  };
+};
+
 describe('mixed inventory', () => {
   it('uses concave stock net area minus holes for individual and mixed-sheet utilization', () => {
     const stock = normalizeSheetStock({
@@ -152,7 +188,7 @@ describe('mixed inventory', () => {
   });
 
   it.each([0, 5])(
-    'prefers full placement over earlier stock counts with priority %s',
+    'requires full joint placement instead of accepting earlier stock counts with priority %s',
     async (priority) => {
       vi.useFakeTimers();
       try {
@@ -161,7 +197,7 @@ describe('mixed inventory', () => {
           name: id,
           kind: 'rectangle',
           widthMm: 8,
-          lengthMm: 80,
+          lengthMm: 104,
           quantity: 1,
           priority: i === 0 ? priority : 0,
         }));
@@ -174,42 +210,47 @@ describe('mixed inventory', () => {
           sheetCompressionSeconds: 1,
           timeLimitSeconds: 10,
         });
-        let round = 0;
+        const candidates: Result[] = [];
+        let offeredPartial = false;
         const pending = solveSheets(
           job,
-          async (child) => {
-            const high = child.settings.sheetStock!.id === 'high';
-            const n = child.parts[0].quantity;
-            if ((high && n > (round === 0 ? 2 : 1)) || (!high && round === 0)) return;
-            const r = layout(child);
-            r.usedLengthMm = n * 8;
-            r.placements = Array.from({ length: n }, (_, copyIndex) => ({
-              partId: child.parts[0].id,
-              copyIndex,
-              xMm: copyIndex * 8,
-              yMm: 0,
-              angleDeg: 0,
-            }));
-            return r;
+          async (child, _signal, onCandidate) => {
+            if (child.parts[0].quantity !== 10) return undefined;
+            if (!offeredPartial) {
+              const partial = virtualLayout({
+                ...child,
+                parts: [{ ...child.parts[0], quantity: 8 }],
+              })!;
+              partial.seed = 'incomplete-demand';
+              onCandidate?.(partial);
+              offeredPartial = true;
+              return partial;
+            }
+            return child.settings.virtualBoards!.length === 2
+              ? virtualLayout(child, [1, 9])
+              : undefined;
           },
-          {
-            onProgress: (p) => {
-              round = p.roundIndex;
-            },
-          },
+          { onCurrentRound: (candidate) => candidates.push(candidate) },
         );
         await vi.advanceTimersByTimeAsync(10000);
         const { result } = await pending;
+        expect(offeredPartial).toBe(true);
+        expect(candidates.length).toBeGreaterThan(0);
+        expect(candidates.every((candidate) => candidate.unplaced!.length === 0)).toBe(true);
+        expect(candidates.every((candidate) => candidate.seed !== 'incomplete-demand')).toBe(true);
         expect(result.unplaced).toEqual([]);
         expect(result.sheets!.map((s) => s.job.parts[0].quantity)).toEqual([1, 9]);
         expect(validate(job, result).status).toBe('passed');
+        for (const sheet of result.sheets!) {
+          expect(validate(sheet.job, sheet.result).status).toBe('passed');
+        }
       } finally {
         vi.useRealTimers();
       }
     },
   );
 
-  it('retries a timed-out stock on its next copy and resets failures next round', async () => {
+  it('adds a board after a failed joint search and resets failures before stock optimization', async () => {
     vi.useFakeTimers();
     try {
       const stock: SheetStock = {
@@ -217,45 +258,53 @@ describe('mixed inventory', () => {
         name: 'retry',
         kind: 'rectangle',
         widthMm: 8,
-        lengthMm: 8,
+        lengthMm: 104,
         quantity: 3,
         priority: 0,
       };
+      const compact = { ...stock, id: 'compact', lengthMm: 80, quantity: 1 };
       const job = makeJob(stock);
       delete job.settings.sheetStock;
+      job.parts[0].quantity = 10;
       Object.assign(job.settings, {
-        sheetStocks: [stock],
-        sheetCount: 3,
+        sheetStocks: [stock, compact],
+        sheetCount: 4,
         sheetCompressionSeconds: 1,
         timeLimitSeconds: 10,
       });
-      let round = 0,
-        sheet = 0;
+      let round = 0;
       const visits: string[] = [];
+      const failures = new Map<number, number>();
       const pending = solveSheets(
         job,
-        async (child, signal) => {
-          visits.push(`${round}:${sheet}`);
-          if (round === 0)
-            return new Promise<undefined>((resolve) => {
-              signal!.addEventListener('abort', () => resolve(undefined), { once: true });
-            });
-          return layout(child);
+        async (child) => {
+          visits.push(`${round}:${child.settings.virtualBoards!.length}`);
+          expect(child.parts[0].quantity).toBe(10);
+          if (round === 0) return undefined;
+          return virtualLayout(child);
         },
         {
           onProgress: (p) => {
             round = p.roundIndex;
-            sheet = p.sheetIndex;
+            expect(p.sheetIndex).toBe(0);
+            if (p.phase === 'Insertion') failures.set(round, p.insertionFailures);
           },
         },
       );
       await vi.advanceTimersByTimeAsync(10000);
       const { result } = await pending;
-      expect(visits).toContain('0:0');
       expect(visits).toContain('0:1');
-      expect(visits).not.toContain('0:2');
-      expect(visits).toContain('1:0');
+      expect(visits).toContain('1:2');
+      expect(visits).toContain('2:1');
+      expect(failures.get(0)).toBe(0);
+      expect(failures.get(1)).toBe(1);
+      expect(failures.get(2)).toBe(0);
       expect(result.unplaced).toEqual([]);
+      expect(result.sheets!.flatMap((sheet) => sheet.result.placements)).toHaveLength(10);
+      expect(validate(job, result).status).toBe('passed');
+      for (const sheet of result.sheets!) {
+        expect(validate(sheet.job, sheet.result).status).toBe('passed');
+      }
     } finally {
       vi.useRealTimers();
     }
@@ -421,18 +470,7 @@ describe('mixed inventory', () => {
         sheetCompressionSeconds: 1,
         timeLimitSeconds: 10,
       });
-      const solve: StripAttempt = async (child) => {
-        const r = layout(child);
-        r.usedLengthMm = 8 * child.parts[0].quantity;
-        r.placements = Array.from({ length: child.parts[0].quantity }, (_, copyIndex) => ({
-          partId: child.parts[0].id,
-          copyIndex,
-          xMm: copyIndex * 8,
-          yMm: 0,
-          angleDeg: 0,
-        }));
-        return r;
-      };
+      const solve: StripAttempt = async (child) => virtualLayout(child);
       const before = JSON.stringify(input);
       const pending = solveSheets(input, solve);
       await vi.advanceTimersByTimeAsync(10000);
@@ -443,6 +481,9 @@ describe('mixed inventory', () => {
         'low',
       ]);
       expect(validate(input, result).status).toBe('passed');
+      for (const sheet of result.sheets!) {
+        expect(validate(sheet.job, sheet.result).status).toBe('passed');
+      }
       expect(JSON.stringify(input)).toBe(before);
       expect(result.unplaced).toEqual([]);
       const corrupt = structuredClone(result);

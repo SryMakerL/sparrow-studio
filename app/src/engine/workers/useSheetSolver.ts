@@ -21,11 +21,16 @@ export function useSheetSolver() {
   const [result, setResult] = useState<Result>();
   const [currentResult, setCurrentResult] = useState<Result>();
   const [sheetProgress, setSheetProgress] = useState<{
+    roundIndex: number;
     sheetIndex: number;
     phase: 'Insertion' | 'Compression';
     insertionFailures: number;
+<<<<<<< HEAD
     compressionStatus?: SheetProgress['compressionStatus'];
     sheetEndReason?: SheetProgress['sheetEndReason'];
+=======
+    selectedBoards?: number;
+>>>>>>> dev
   }>();
   const [state, setState] = useState<RunState>('Ready');
   const [error, setError] = useState('');
@@ -95,6 +100,7 @@ export function useSheetSolver() {
         return reply.validation;
       },
       onProgress: (progress) => {
+<<<<<<< HEAD
         if (active.current !== controller || controller.signal.aborted) return;
         setSheetProgress({
           sheetIndex: progress.sheetIndex,
@@ -125,6 +131,16 @@ export function useSheetSolver() {
             },
           ]);
         }
+=======
+        if (active.current === controller && !controller.signal.aborted)
+          setSheetProgress({
+            roundIndex: progress.roundIndex,
+            sheetIndex: progress.sheetIndex,
+            phase: progress.phase,
+            insertionFailures: progress.insertionFailures,
+            selectedBoards: progress.selectedBoards,
+          });
+>>>>>>> dev
       },
       onCurrentRound: (next) => {
         if (active.current === controller && !controller.signal.aborted) setCurrentResult(next);
@@ -145,7 +161,7 @@ export function useSheetSolver() {
           runDocument: doc,
           solverRevision: outcome.result.solverRevision,
           seed: outcome.result.seed,
-          buildMode: 'Bounded sheet strip jobs',
+          buildMode: 'Virtual stitched board search',
           stopReason: outcome.reason,
           history: [],
           liveErrors: [],

@@ -1,4 +1,5 @@
 import { normalizeSheetStock, normalizeSheetStocks } from '../stock';
+import { normalizeSheetCycleBudget } from '../sheetCycleBudget';
 import { orient2d } from 'robust-predicates';
 import { LIMITS, type Job, type Point, type Ring, type Part } from '../model';
 
@@ -74,8 +75,7 @@ export function ringCrosses(a: Ring, b: Ring) {
   );
 }
 export function normalizeRing(value: unknown): Ring {
-  if (!Array.isArray(value))
-    throw Error('Contour must be an array.');
+  if (!Array.isArray(value)) throw Error('Contour must be an array.');
   const ring: Ring = [];
   for (const p of value) {
     if (
@@ -184,26 +184,55 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
   )
     throw Error('Invalid material width, clearance, or run duration.');
   if (!['standard', 'fast'].includes(s.solverPreset)) throw Error('Invalid solver preset.');
+  if (s.virtualBoards !== undefined) {
+    if (
+      !Array.isArray(s.virtualBoards) ||
+      !s.virtualBoards.length ||
+      s.virtualBoards.length > 1000 ||
+      s.sheetCount !== undefined ||
+      s.sheetStocks !== undefined ||
+      s.sheetStock !== undefined ||
+      s.sheetLengthMm === undefined
+    )
+      throw Error('Invalid virtual board domains.');
+    for (const board of s.virtualBoards) {
+      if (!board || !Array.isArray(board.outer) || !Array.isArray(board.holes))
+        throw Error('Invalid virtual board geometry.');
+      const origin = bounds(board.outer);
+      if (
+        origin[0] < 0 ||
+        origin[1] < 0 ||
+        origin[2] > s.sheetLengthMm ||
+        origin[3] > s.materialWidthMm
+      )
+        throw Error('Virtual board exceeds its enclosing rectangle.');
+      const local = (ring: Ring): Ring => ring.map(([x, y]) => [x - origin[0], y - origin[1]]);
+      normalizePart({
+        id: 'virtual-board',
+        name: 'Virtual board',
+        source: { format: 'sparrow' },
+        outer: local(board.outer),
+        holes: board.holes.map(local),
+        approximationToleranceMm: 0,
+        quantity: 1,
+        priority: 0,
+        rotations: { kind: 'discrete', degrees: [0] },
+      });
+    }
+  }
   if (
     s.sheetLengthMm !== undefined &&
-    (!Number.isFinite(s.sheetLengthMm) || s.sheetLengthMm <= 0 || s.sheetLengthMm > LIMITS.extent)
+    (!Number.isFinite(s.sheetLengthMm) ||
+      s.sheetLengthMm <= 0 ||
+      s.sheetLengthMm > (s.virtualBoards ? 10_000_000 : LIMITS.extent))
   )
     throw Error('Invalid sheet length.');
   if (
     s.sheetCount !== undefined &&
-    (s.sheetLengthMm === undefined ||
-      !Number.isSafeInteger(s.sheetCount) ||
-      s.sheetCount < 1)
+    (s.sheetLengthMm === undefined || !Number.isSafeInteger(s.sheetCount) || s.sheetCount < 1)
   )
     throw Error('Invalid sheet count.');
-  const sheetCompressionSeconds =
-    s.sheetCompressionSeconds === undefined ? 10 : s.sheetCompressionSeconds;
-  if (
-    !Number.isInteger(sheetCompressionSeconds) ||
-    sheetCompressionSeconds < 1 ||
-    sheetCompressionSeconds > 600
-  )
-    throw Error('Sheet compression duration must be a whole number from 1 to 600 seconds.');
+  const { sheetCompressionSeconds: _legacyCompressionSeconds, ...settings } = s;
   const sheetInsertionWarmStartSeconds =
     s.sheetInsertionWarmStartSeconds === undefined ? 10 : s.sheetInsertionWarmStartSeconds;
   if (
@@ -211,7 +240,9 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
     sheetInsertionWarmStartSeconds < 1 ||
     sheetInsertionWarmStartSeconds > 600
   )
-    throw Error('Sheet insertion warm-start duration must be a whole number from 1 to 600 seconds.');
+    throw Error(
+      'Sheet insertion warm-start duration must be a whole number from 1 to 600 seconds.',
+    );
   const sheetInsertionFailures =
     s.sheetInsertionFailures === undefined ? 3 : s.sheetInsertionFailures;
   if (
@@ -233,12 +264,12 @@ export function normalizeJob(doc: Job, allowEmpty = false): Job {
   return {
     ...doc,
     settings: {
-      ...s,
+      ...settings,
       sheetStocks,
       sheetStock,
-      sheetCompressionSeconds,
       sheetInsertionWarmStartSeconds,
       sheetInsertionFailures,
+      sheetCycleBudget: normalizeSheetCycleBudget(s.sheetCycleBudget),
     },
     parts,
   };

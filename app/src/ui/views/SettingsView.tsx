@@ -1,15 +1,35 @@
 import { useEffect, useState } from 'react';
-import { MAX_SOLVER_THREADS, type Preset, type TimeLimit } from '../../engine/model';
+import {
+  MAX_SOLVER_THREADS,
+  type Preset,
+  type SheetCycleBudget,
+  type TimeLimit,
+} from '../../engine/model';
+import {
+  DEFAULT_SHEET_CYCLE_BUDGET,
+  SHEET_CYCLE_BUDGET_RANGES,
+} from '../../engine/sheetCycleBudget';
 import { TIME_LIMITS, type SolverSettings, type Threads } from '../../project/model';
 import { useStudio } from '../context';
 import { RunBar } from '../RunBar';
 import { Explanation } from './Explanation';
 
-type Item = 'solve' | 'time' | 'search' | 'threads';
+type Item = 'solve' | 'time' | 'sheet' | 'search' | 'threads';
+
+const cycleFields: { key: keyof SheetCycleBudget; label: string }[] = [
+  { key: 'localMs', label: 'Local compression time slice, ms' },
+  { key: 'globalMs', label: 'Global search time slice, ms' },
+  { key: 'evacuationMs', label: 'Board evacuation time slice, ms' },
+  { key: 'localPercent', label: 'Local compression share of remaining time, %' },
+  { key: 'globalPercent', label: 'Global search share of remaining time, %' },
+  { key: 'evacuationPercent', label: 'Board evacuation share of remaining time, %' },
+  { key: 'maxRounds', label: 'Maximum cycle rounds (0 = disabled)' },
+  { key: 'stallRounds', label: 'Stop after rounds without improvement (0 = disabled)' },
+];
 
 const timeLabel = (limit: TimeLimit) =>
   limit === null
-    ? 'Automatic: stop when the search stalls'
+    ? 'Automatic: no fixed total deadline'
     : limit < 60
       ? `Up to ${limit} seconds`
       : `Up to ${limit / 60} minute${limit > 60 ? 's' : ''}`;
@@ -25,6 +45,15 @@ export function SettingsView() {
   const items: { id: Item; name: string; summary: string }[] = [
     { id: 'solve', name: 'Solver', summary: 'Local: in this browser' },
     { id: 'time', name: 'Time and stopping', summary: timeLabel(settings.timeLimitSeconds) },
+    ...(project.stock.packing === 'sheets'
+      ? [
+          {
+            id: 'sheet' as const,
+            name: 'Sheet search budgets',
+            summary: 'Time slices, shares and cycle stopping',
+          },
+        ]
+      : []),
     {
       id: 'search',
       name: 'Search preset',
@@ -81,40 +110,59 @@ export function SettingsView() {
                       </label>
                       {project.stock.packing === 'sheets' && (
                         <>
-                          <SheetSettingInput
-                            label="Sheet compression duration, seconds"
-                            value={settings.sheetCompressionSeconds}
-                            max={600}
-                            defaultValue={10}
-                            onChange={(sheetCompressionSeconds) =>
-                              update({ sheetCompressionSeconds })
-                            }
-                          />
-                          <SheetSettingInput
-                            label="Insertion attempt (seconds)"
-                            value={settings.sheetInsertionWarmStartSeconds}
-                            max={600}
-                            defaultValue={10}
-                            onChange={(sheetInsertionWarmStartSeconds) =>
-                              update({ sheetInsertionWarmStartSeconds })
-                            }
-                          />
                           <p className="muted">
-                            Each insertion uses the latest validated layout without cold-start
-                            fallback. Initial sheet construction uses 2.5 seconds. Attempts may
-                            finish early; the total time limit takes priority.
+                            All selected boards are searched together by Sparrow on one horizontal
+                            virtual board, without rotating the boards. Fixed isolation bands are
+                            max(1 mm, clearance) wide.
                           </p>
-                          <SheetSettingInput
-                            label="Consecutive insertion failures before changing sheets"
-                            value={settings.sheetInsertionFailures}
-                            max={100}
-                            defaultValue={3}
-                            onChange={(sheetInsertionFailures) =>
-                              update({ sheetInsertionFailures })
-                            }
-                          />
                         </>
                       )}
+                    </>
+                  )}
+                  {item.id === 'sheet' && (
+                    <>
+                      {cycleFields.map(({ key, label }) => (
+                        <SheetSettingInput
+                          key={key}
+                          label={label}
+                          value={settings.sheetCycleBudget[key]}
+                          min={SHEET_CYCLE_BUDGET_RANGES[key].min}
+                          max={SHEET_CYCLE_BUDGET_RANGES[key].max}
+                          defaultValue={DEFAULT_SHEET_CYCLE_BUDGET[key]}
+                          onChange={(value) =>
+                            edit((current) => ({
+                              ...current,
+                              settings: {
+                                ...current.settings,
+                                sheetCycleBudget: {
+                                  ...current.settings.sheetCycleBudget,
+                                  [key]: value,
+                                },
+                              },
+                            }))
+                          }
+                        />
+                      ))}
+                      <button
+                        onClick={() =>
+                          update({ sheetCycleBudget: { ...DEFAULT_SHEET_CYCLE_BUDGET } })
+                        }
+                      >
+                        Restore budget defaults
+                      </button>
+                      <p className="muted">
+                        Each stage uses its own share of the remaining total time when that stage
+                        starts, capped by its time slice. Without a total deadline, stages use their
+                        time slices. Local time is divided among changed boards. These percentages
+                        do not need to add up to 100%. Restore budget defaults resets only these
+                        eight controls.
+                      </p>
+                      <p className="muted">
+                        Both round thresholds default to 0, disabling round-based early stopping.
+                        Automatic with both thresholds at 0 can continue until you press Stop;
+                        automatic completion is not guaranteed. The total time limit and manual Stop
+                        take priority. Settings apply to the next run, not the current run.
+                      </p>
                     </>
                   )}
                   {item.id === 'search' && (
@@ -139,7 +187,10 @@ export function SettingsView() {
                             update({ threads: Number(event.target.value) as Threads })
                           }
                         >
-                          {Array.from({ length: MAX_SOLVER_THREADS + 1 }, (_, threads) => threads as Threads).map((threads) => (
+                          {Array.from(
+                            { length: MAX_SOLVER_THREADS + 1 },
+                            (_, threads) => threads as Threads,
+                          ).map((threads) => (
                             <option key={threads} value={threads}>
                               {threadsLabel(threads)}
                             </option>
@@ -167,12 +218,14 @@ export function SettingsView() {
 function SheetSettingInput({
   label,
   value,
+  min = 1,
   max,
   defaultValue,
   onChange,
 }: {
   label: string;
   value: number;
+  min?: number;
   max: number;
   defaultValue: number;
   onChange: (value: number) => void;
@@ -180,13 +233,13 @@ function SheetSettingInput({
   const [text, setText] = useState(String(value));
   useEffect(() => setText(String(value)), [value]);
   const number = Number(text);
-  const valid = text.trim() !== '' && Number.isInteger(number) && number >= 1 && number <= max;
+  const valid = text.trim() !== '' && Number.isInteger(number) && number >= min && number <= max;
   return (
     <label className="field">
       {label}
       <input
         type="number"
-        min={1}
+        min={min}
         max={max}
         step={1}
         value={text}
@@ -195,7 +248,7 @@ function SheetSettingInput({
           const next = event.target.value;
           setText(next);
           const number = Number(next);
-          if (next.trim() !== '' && Number.isInteger(number) && number >= 1 && number <= max)
+          if (next.trim() !== '' && Number.isInteger(number) && number >= min && number <= max)
             onChange(number);
         }}
       />
@@ -216,24 +269,49 @@ function SettingsExplanation({ item }: { item: Item }) {
     return (
       <Explanation title="Time and stopping">
         <p>
-          Automatic keeps searching while the layout still improves, then stops. A time limit stops
+          Automatic has no fixed total deadline. In strip mode, the search stops when improvement
+          stalls. In sheet mode, Automatic with both round thresholds at 0 (the defaults) can
+          continue until you press Stop; automatic completion is not guaranteed. A time limit stops
           at the limit at the latest. You can stop any run yourself; the best valid layout found so
           far is kept.
         </p>
         <p className="muted">
-          In sheet mode, the selected time is the total search budget for all sheets. Each sheet
-          alternates insertion, timed compression (default: 10 seconds), and insertion again. After
-          the configured number of consecutive insertion failures (default: 3), the solver moves to
-          the next sheet. A successful insertion resets the failure count. Once all remaining parts
-          are placed, the final sheet is compressed for the configured compression duration multiplied
-          by the insertion failure limit, including when everything fits on one sheet. The total
-          deadline and manual Stop take priority over this finishing budget. The same flow applies
-          to every rotation rule, including continuous rotations. The total time limit and manual
-          Stop can interrupt any stage, so a short total budget may expire before later sheets are
-          processed. The best validated layout found so far is kept.
+          In sheet mode, the selected time is the total search budget for all board combinations.
+          Sheet search budgets controls stage time slices, percentages and round thresholds; there
+          is no separate time limit per combination. All selected boards are joined horizontally
+          without board rotation and solved together by Sparrow. Fixed isolation bands are max(1 mm,
+          clearance) wide. Stock priority and capacity guide the initial selection. A failed
+          combination adds boards; a successful one tries removing boards or switching stock sizes.
+          Live shows the selected board count, candidate combination round, and joint search or
+          joint compression stage. The total deadline and manual Stop can interrupt any stage; the
+          best validated layout found so far is kept.
         </p>
         <p className="muted">
           Settings apply to the next run. They do not change the current solution.
+        </p>
+      </Explanation>
+    );
+  if (item === 'sheet')
+    return (
+      <Explanation title="Sheet search budgets">
+        <p>
+          Alternating local compression, global search and board evacuation each have a time slice
+          in milliseconds and a percentage of the total time remaining when that stage starts.
+          Without a total deadline, stages are scheduled using their time slices. Local time is
+          divided among the changed boards. The percentages are independent, not a split of one
+          shared 100%. The total time limit and manual Stop always take priority.
+        </p>
+        <p>
+          Board-local stages use the original Sparrow warm-start exploration and compression,
+          allowing temporary collisions. A layout is published only after mapping back to the real
+          boards and passing validation. Actual local time remains limited by the number of changed
+          boards, its stage time slice and any remaining total time.
+        </p>
+        <p>
+          Defaults are 10000 / 10000 / 3000 ms and 60 / 60 / 25%. Both round thresholds default to
+          0, disabling round-based early stopping, not the search. Automatic with both thresholds at
+          0 can continue until you press Stop; automatic completion is not guaranteed. Restore
+          budget defaults resets only these eight controls. Settings apply to the next run only.
         </p>
       </Explanation>
     );

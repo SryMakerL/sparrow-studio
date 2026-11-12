@@ -13,7 +13,19 @@ export async function solvePolygon(
   initialPlacement?: Result,
 ): Promise<Result | undefined> {
   job = normalizeJob(job);
-  const snapshot = job.settings.sheetStock;
+  const snapshot =
+    job.settings.sheetStock ??
+    (job.settings.virtualBoards
+      ? {
+          id: 'virtual',
+          name: 'Virtual boards',
+          kind: 'rectangle' as const,
+          quantity: 1,
+          priority: 0,
+          lengthMm: job.settings.sheetLengthMm!,
+          widthMm: job.settings.materialWidthMm,
+        }
+      : undefined);
   if (!snapshot) throw Error('Sheet stock required.');
   const stock =
     snapshot.kind === 'polygon'
@@ -37,13 +49,19 @@ export async function solvePolygon(
   copies.sort((a, b) => Math.abs(area(b.part.outer)) - Math.abs(area(a.part.outer)));
   let best: Result | undefined;
   let operations = 0;
+  const domains = job.settings.virtualBoards ?? [stock];
   const outsideArea = (ring: Ring) =>
-    polygonClipping
-      .difference([ring], [stock.outer, ...stock.holes])
-      .reduce(
-        (n, p) => n + Math.abs(area(p[0])) - p.slice(1).reduce((m, h) => m + Math.abs(area(h)), 0),
-        0,
-      );
+    Math.min(
+      ...domains.map((domain) =>
+        polygonClipping
+          .difference([ring], [domain.outer, ...domain.holes])
+          .reduce(
+            (n, p) =>
+              n + Math.abs(area(p[0])) - p.slice(1).reduce((m, h) => m + Math.abs(area(h)), 0),
+            0,
+          ),
+      ),
+    );
   for (let round = 0; !stopped(); round++) {
     const order = [...copies];
     if (round > 0) {
@@ -88,7 +106,10 @@ export async function solvePolygon(
         const gap = job.settings.clearanceMm;
         const sample = (ring: Ring): Ring =>
           ring.filter((_, i) => i % Math.max(1, Math.ceil(ring.length / 96)) === 0);
-        const anchors = sample([...stock.outer, ...stock.holes.flat(), ...rings.flat()]);
+        const anchors = sample([
+          ...domains.flatMap((domain) => [...domain.outer, ...domain.holes.flat()]),
+          ...rings.flat(),
+        ]);
         for (const target of anchors)
           for (const vertex of sample(rotated)) {
             candidates.push([target[0] - vertex[0], target[1] - vertex[1]]);

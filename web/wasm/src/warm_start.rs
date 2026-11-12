@@ -32,9 +32,15 @@ struct Placement {
 
 pub(crate) fn parse(input: &str) -> Result<Input, String> {
     let parsed: Input = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    let geometry: serde_json::Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    let limit = if geometry["stock_geometry"]["boards"].is_array() {
+        10_000_000.0
+    } else {
+        100_000.0
+    };
     if parsed
         .stock_length
-        .is_some_and(|length| !length.is_finite() || length <= 0.0 || length > 100_000.0)
+        .is_some_and(|length| !length.is_finite() || length <= 0.0 || length > limit)
     {
         return Err("Invalid stock_length".into());
     }
@@ -67,6 +73,7 @@ pub(crate) fn apply_stock_length(
                 .with_stock_constraints(SPStockConstraints {
                     max_width: length,
                     holes: InferiorQualityZone::new(0, vec![]).map_err(|e| e.to_string())?,
+                    boards: vec![],
                 })
                 .map_err(|e| e.to_string())?;
         }
@@ -91,7 +98,11 @@ pub(crate) fn construct(
                     .shape_modify_config
                     .offset
                     .unwrap_or(0.0)
-        || used > 100_000.0
+        || used
+            > instance
+                .stock_constraints
+                .as_ref()
+                .map_or(100_000.0, |stock| stock.max_width)
         || initial.placements.is_empty()
         || initial.placements.len() > instance.total_item_qty()
         || instance

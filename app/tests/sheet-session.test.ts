@@ -151,6 +151,72 @@ it('keeps the last equal-width compression candidate as the next warm-start snap
   session.close();
 });
 
+it('keeps a fewer-board candidate even when virtual strip length increases', async () => {
+  class MockWorker {
+    onmessage?: (event: { data: unknown }) => void;
+    postMessage(message: Record<string, unknown>) {
+      if (message.type === 'session-init')
+        queueMicrotask(() => this.send({ type: 'session-ready' }));
+      if (message.type !== 'session-step') return;
+      queueMicrotask(() => {
+        for (const [snapshotId, width, positions] of [
+          [1, 41, [0, 31]],
+          [2, 51, [31, 41]],
+          [3, 41, [0, 31]],
+        ] as const)
+          this.send({
+            type: 'candidate',
+            attemptId: message.attemptId,
+            snapshotId,
+            solution: {
+              strip_width: width,
+              layout: {
+                placed_items: positions.map((x) => ({
+                  item_id: 0,
+                  transformation: { rotation: 0, translation: [x, 0] },
+                })),
+              },
+            },
+          });
+        this.send({ type: 'finished', attemptId: message.attemptId });
+      });
+    }
+    send(data: Record<string, unknown>) {
+      this.onmessage?.({ data: { ...data, runId: 1, documentRevision: 7 } });
+    }
+  }
+  vi.stubGlobal('Worker', MockWorker);
+  const job = catalog();
+  job.parts[0].quantity = 2;
+  job.settings.sheetLengthMm = 61;
+  job.settings.materialWidthMm = 10;
+  job.settings.virtualBoards = [
+    {
+      outer: [
+        [0, 0],
+        [30, 0],
+        [30, 10],
+        [0, 10],
+      ],
+      holes: [],
+    },
+    {
+      outer: [
+        [31, 0],
+        [61, 0],
+        [61, 10],
+        [31, 10],
+      ],
+      holes: [],
+    },
+  ];
+  const session = new SheetWorkerSession(job, 7);
+  const result = await session.attempt(job);
+  expect(result?.usedLengthMm).toBe(51);
+  expect(result?.placements.map((placement) => placement.xMm)).toEqual([31, 41]);
+  session.close();
+});
+
 it('does not dispatch a cold step when a warm-start snapshot is unavailable', async () => {
   const steps: Record<string, unknown>[] = [];
   class MockWorker {

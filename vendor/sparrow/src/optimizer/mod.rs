@@ -20,6 +20,10 @@ pub mod separator;
 mod worker;
 pub mod explore;
 pub mod compress;
+pub mod board_shrink;
+pub mod board_evacuation;
+pub mod board_local;
+pub mod board_cycle;
 
 /// Algorithm 11 from https://doi.org/10.48550/arXiv.2509.13329
 ///
@@ -95,9 +99,13 @@ fn minimum_strip_width(prob: &SPProblem) -> f32 {
     let mut min_width = (area / f64::from(container.height())) as f32 * (1.0 - REL_TOL);
 
     for (item, quantity) in &prob.instance.items {
+<<<<<<< HEAD
         if *quantity == 0 {
             continue;
         }
+=======
+        if *quantity == 0 { continue; }
+>>>>>>> dev
         let rotations = match &item.allowed_rotation {
             RotationRange::None => &[0.0][..],
             RotationRange::Discrete(rotations) => rotations.as_slice(),

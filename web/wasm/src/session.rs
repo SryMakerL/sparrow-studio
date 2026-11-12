@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sparrow::config::SparrowConfig;
 use sparrow::consts::LBF_SAMPLE_CONFIG;
+use sparrow::optimizer::board_cycle::{BoardCycleBudget, parse_board_cycle_budget};
 use sparrow::optimizer::{lbf::LBFBuilder, optimize};
 use sparrow::util::listener::{OptimizationPhase, ReportType, SolutionListener};
 use sparrow::util::terminator::Terminator;
@@ -38,6 +39,7 @@ enum Mode {
 pub struct SheetSession {
     catalog: SPInstance,
     config: SparrowConfig,
+    board_cycle_budget: BoardCycleBudget,
     epoch: Instant,
     snapshots: BTreeMap<u32, SPSolution>,
     next_snapshot: u32,
@@ -89,6 +91,7 @@ impl SheetSession {
         if input.len() > 10 * 1024 * 1024 || !clearance.is_finite() || clearance < 0.0 {
             return Err("Invalid clearance or oversized input".into());
         }
+        let board_cycle_budget = parse_board_cycle_budget(input)?;
         let mut config = solver_config(preset, thread_count(), None)?;
         config.min_item_separation = (clearance > 0.0).then_some(clearance);
         let external: ExtSPInstance =
@@ -118,6 +121,7 @@ impl SheetSession {
         Ok(Self {
             catalog,
             config,
+            board_cycle_budget,
             epoch,
             snapshots: BTreeMap::new(),
             next_snapshot: 1,
@@ -241,11 +245,29 @@ impl SheetSession {
                 initial,
                 seed,
                 &self.config,
+                &self.board_cycle_budget,
                 deadline - budget.mul_f64(0.2),
                 deadline,
                 terminator,
                 &mut listener,
             );
+        } else if request.mode == Mode::Compress
+            && instance
+                .stock_constraints
+                .as_ref()
+                .is_some_and(|stock| stock.boards.len() > 1)
+        {
+            let best = sparrow::optimizer::board_cycle::alternate_boards_until(
+                &instance,
+                &initial,
+                seed,
+                &self.config,
+                &self.board_cycle_budget,
+                None,
+                terminator,
+                &mut listener,
+            );
+            listener.report(ReportType::Final, &best, &instance);
         } else if request.mode != Mode::Search {
             let mut exploration = self.config.expl_cfg;
             let mut compression = self.config.cmpr_cfg;
@@ -332,6 +354,7 @@ fn compress_until(
     mut best: SPSolution,
     seed: u64,
     config: &SparrowConfig,
+    board_cycle_budget: &BoardCycleBudget,
     exploration_deadline: Instant,
     deadline: Instant,
     terminator: &impl Terminator,
@@ -341,15 +364,35 @@ fn compress_until(
         compress::compression_phase, explore::{exploration_phase, rearrange}, separator::Separator,
     };
 
+    if instance
+        .stock_constraints
+        .as_ref()
+        .is_some_and(|stock| stock.boards.len() > 1)
+    {
+        best = sparrow::optimizer::board_cycle::alternate_boards_with_budget(
+            instance,
+            &best,
+            seed,
+            config,
+            board_cycle_budget,
+            deadline,
+            terminator,
+            listener,
+        );
+        listener.report(ReportType::Final, &best, instance);
+        return;
+    }
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
     let mut problem = SPProblem::new(instance.clone());
     problem.restore(&best);
     let bound = geometric_lower_bound(&problem);
-    for exploration in [true, false] {
+    let packing_deadline = deadline;
+    let packing_exploration_deadline = exploration_deadline;
+    'packing: for exploration in [true, false] {
         let phase_deadline = if exploration {
-            exploration_deadline.min(deadline)
+            packing_exploration_deadline.min(packing_deadline)
         } else {
-            deadline
+            packing_deadline
         };
         let term = PhaseTerminator {
             parent: terminator,
@@ -364,7 +407,16 @@ fn compress_until(
             // Collision geometry and rotations use f32; at this tolerance there is
             // no meaningful room below the proven area/orientation lower bound.
             let gap = best.strip_width() - bound;
+<<<<<<< HEAD
             let at_bound = gap <= best.strip_width().abs().max(1.0) * 2e-6;
+=======
+            if gap <= best.strip_width().abs().max(1.0) * 2e-6 {
+                log::info!(
+                    "[SESSION] compression reached the geometric lower bound; finishing early"
+                );
+                break 'packing;
+            }
+>>>>>>> dev
             let max_shrink = (gap / best.strip_width() * 0.5).min(0.5);
             let mut problem = SPProblem::new(instance.clone());
             problem.restore(&best);

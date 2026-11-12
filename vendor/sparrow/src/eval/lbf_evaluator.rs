@@ -16,7 +16,8 @@ pub struct LBFEvaluator<'a> {
     layout: &'a Layout,
     item: &'a Item,
     shape_buff: SPolygon,
-    n_evals: usize
+    n_evals: usize,
+    boards: &'a [jagua_rs::probs::spp::entities::SPBoardDomain],
 }
 
 impl<'a> LBFEvaluator<'a> {
@@ -25,12 +26,22 @@ impl<'a> LBFEvaluator<'a> {
             layout,
             item,
             shape_buff: item.shape_cd.as_ref().clone(),
-            n_evals: 0
+            n_evals: 0,
+            boards: &[],
         }
+    }
+
+    pub fn with_stock_boards(mut self, boards: &'a [jagua_rs::probs::spp::entities::SPBoardDomain]) -> Self {
+        self.boards = boards;
+        self
     }
 }
 
 impl<'a> SampleEvaluator for LBFEvaluator<'a> {
+    fn stock_boards(&self) -> &[jagua_rs::probs::spp::entities::SPBoardDomain] {
+        self.boards
+    }
+
     fn evaluate_sample(&mut self, dt: DTransformation, _upper_bound: Option<SampleEval>) -> SampleEval {
         self.n_evals += 1;
         let cde = self.layout.cde();

@@ -4,7 +4,7 @@ mod solution;
 mod strip;
 
 #[doc(inline)]
-pub use instance::{SPInstance, SPStockConstraints};
+pub use instance::{SPBoardDomain, SPInstance, SPStockConstraints};
 #[doc(inline)]
 pub use problem::SPPlacement;
 #[doc(inline)]
