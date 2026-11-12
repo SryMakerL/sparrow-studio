@@ -91,19 +91,21 @@ export function LiveView() {
               </div>
               <span className="muted">
                 {batch
-                  ? `${completed?.length ?? 0} sheets processed · ${currentResult?.unplaced?.reduce((sum, part) => sum + part.quantity, 0) ?? copyCount(runJob?.parts ?? [])} parts remaining.`
+                  ? `${completed?.length ?? 0} boards in the validated candidate layout · ${currentResult?.unplaced?.reduce((sum, part) => sum + part.quantity, 0) ?? copyCount(runJob?.parts ?? [])} parts unplaced.`
                   : 'Of the best valid layout so far.'}
               </span>
               {batch && running && solver.sheetProgress && (
                 <dl className="facts">
+                  <dt>Boards in current combination</dt>
+                  <dd>{solver.sheetProgress.selectedBoards ?? '—'}</dd>
                   <dt>Current stage</dt>
-                  <dd>{solver.sheetProgress.phase}</dd>
-                  <dt>Current sheet</dt>
-                  <dd>{solver.sheetProgress.sheetIndex + 1}</dd>
-                  <dt>Insertion failures</dt>
                   <dd>
-                    {solver.sheetProgress.insertionFailures} / {runJob?.settings.sheetInsertionFailures ?? 3}
+                    {solver.sheetProgress.phase === 'Insertion'
+                      ? 'Joint search'
+                      : 'Joint compression'}
                   </dd>
+                  <dt>Candidate combination round</dt>
+                  <dd>{solver.sheetProgress.roundIndex + 1}</dd>
                 </dl>
               )}
               <div className="stack">
@@ -112,7 +114,7 @@ export function LiveView() {
                   {limit
                     ? ` of ${formatSeconds(limit)}${batch ? ' total search time' : ''}`
                     : batch
-                      ? ` · final-sheet compression: up to ${formatSeconds((runJob.settings.sheetCompressionSeconds ?? 10) * (runJob.settings.sheetInsertionFailures ?? 3))}`
+                      ? ' · no total deadline; press Stop to finish'
                       : ' · stops when the search stalls'}
                 </span>
                 {limit && (
@@ -140,13 +142,7 @@ export function LiveView() {
                 </button>
               )}
               <p className="muted">
-                {batch
-                  ? currentResult?.currentSheetIndex !== undefined
-                    ? `Sheet ${currentResult.currentSheetIndex + 1} · `
-                    : ''
-                  : solver.phase
-                    ? `${solver.phase} · `
-                    : ''}
+                {batch ? 'Joint virtual-board solver · ' : solver.phase ? `${solver.phase} · ` : ''}
                 {solver.workers
                   ? `${solver.workers.actual} solver threads`
                   : batch
@@ -168,7 +164,7 @@ export function LiveView() {
           runJob && (
             <>
               <p className="muted">
-                {batch ? 'All validated sheets so far' : 'Live search and best valid layout'}
+                {batch ? 'Validated candidate combination' : 'Live search and best valid layout'}
               </p>
               {!batch && (
                 <div className="segmented" role="group" aria-label="Layout shown">
@@ -261,7 +257,7 @@ function NextRun({ onSolution }: { onSolution?: () => void }) {
           {settings.timeLimitSeconds
             ? `${project.stock.packing === 'sheets' ? 'total search time: ' : 'after '}${formatSeconds(settings.timeLimitSeconds)}`
             : project.stock.packing === 'sheets'
-              ? `automatic · final-sheet compression: up to ${formatSeconds(settings.sheetCompressionSeconds * settings.sheetInsertionFailures)}`
+              ? 'automatic · no total deadline; you can press Stop'
               : 'when the search stalls'}
         </dd>
         <dt>Search</dt>

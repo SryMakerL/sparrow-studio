@@ -10,9 +10,11 @@ export function useSheetSolver() {
   const [result, setResult] = useState<Result>();
   const [currentResult, setCurrentResult] = useState<Result>();
   const [sheetProgress, setSheetProgress] = useState<{
+    roundIndex: number;
     sheetIndex: number;
     phase: 'Insertion' | 'Compression';
     insertionFailures: number;
+    selectedBoards?: number;
   }>();
   const [state, setState] = useState<RunState>('Ready');
   const [error, setError] = useState('');
@@ -81,9 +83,11 @@ export function useSheetSolver() {
       onProgress: (progress) => {
         if (active.current === controller && !controller.signal.aborted)
           setSheetProgress({
+            roundIndex: progress.roundIndex,
             sheetIndex: progress.sheetIndex,
             phase: progress.phase,
             insertionFailures: progress.insertionFailures,
+            selectedBoards: progress.selectedBoards,
           });
       },
       onCurrentRound: (next) => {
@@ -105,7 +109,7 @@ export function useSheetSolver() {
           runDocument: doc,
           solverRevision: outcome.result.solverRevision,
           seed: outcome.result.seed,
-          buildMode: 'Bounded sheet strip jobs',
+          buildMode: 'Virtual stitched board search',
           stopReason: outcome.reason,
           history: [],
           liveErrors: [],

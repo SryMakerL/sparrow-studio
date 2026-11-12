@@ -16,6 +16,7 @@ pub struct SeparationEvaluator<'a> {
     loss_evaluator: CollisionLossEvaluator<'a>,
     shape_buff: SPolygon,
     n_evals: usize,
+    boards: &'a [jagua_rs::probs::spp::entities::SPBoardDomain],
 }
 
 impl<'a> SeparationEvaluator<'a> {
@@ -42,11 +43,21 @@ impl<'a> SeparationEvaluator<'a> {
             loss_evaluator: CollisionLossEvaluator::new(layout, ct, current_pk),
             shape_buff: item.shape_cd.as_ref().clone(),
             n_evals: 0,
+            boards: &[],
         }
+    }
+
+    pub fn with_stock_boards(mut self, boards: &'a [jagua_rs::probs::spp::entities::SPBoardDomain]) -> Self {
+        self.boards = boards;
+        self
     }
 }
 
 impl<'a> SampleEvaluator for SeparationEvaluator<'a> {
+    fn stock_boards(&self) -> &[jagua_rs::probs::spp::entities::SPBoardDomain] {
+        self.boards
+    }
+
     /// Evaluates a transformation. An upper bound can be provided to early terminate the process.
     /// Algorithm 7 from https://doi.org/10.48550/arXiv.2509.13329
     fn evaluate_sample(&mut self, dt: DTransformation, upper_bound: Option<SampleEval>) -> SampleEval {

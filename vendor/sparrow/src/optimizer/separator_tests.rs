@@ -33,6 +33,7 @@ fn separator(positions: &[(f32, f32)], holes: Vec<OriginalShape>) -> Separator {
         Strip::new(10.0, config, ShapeModifyConfig::default(), 10.0).unwrap(),
     ).with_stock_constraints(SPStockConstraints {
         max_width: 20.0,
+        boards: vec![],
         holes: InferiorQualityZone::new(0, holes).unwrap(),
     }).unwrap();
     let mut prob = SPProblem::new(instance.clone());

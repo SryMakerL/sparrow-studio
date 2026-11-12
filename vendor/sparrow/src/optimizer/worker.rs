@@ -50,7 +50,9 @@ impl SeparatorWorker {
                 let item = self.instance.item(item_id);
 
                 // Create an 'evaluator' to perform collision detection and collision quantification of the samples during the search
-                let evaluator = SeparationEvaluator::new(&self.prob.layout, item, pk, &self.ct);
+                let boards = self.instance.stock_constraints.as_ref().map_or(&[][..], |stock| stock.boards.as_slice());
+                let evaluator = SeparationEvaluator::new(&self.prob.layout, item, pk, &self.ct)
+                    .with_stock_boards(boards);
 
                 // Perform the search for a better position for the item
                 let (best_sample, n_evals) =

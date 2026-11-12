@@ -517,6 +517,7 @@ fn geometric_bound_ignores_zero_demand_and_finishes_without_spinning() {
         at_bound,
         42,
         &session.config,
+        &session.board_cycle_budget,
         deadline,
         deadline,
         &term,

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, newPart, type Job, type Result } from '../src/engine/model';
 import { normalizePart } from '../src/engine/geometry/normalize';
+import { validate } from '../src/engine/geometry/validate';
 import { importSparrow, solverInput } from '../src/engine/import/sparrow';
 import { solveSheets, type StripAttempt } from '../src/engine/sheets';
 import { solvePolygon } from '../src/engine/workers/polygonSolver';
@@ -18,31 +19,63 @@ const square = (size: number, priority = 0, quantity = 1) => ({
   quantity,
   rotations: { kind: 'discrete' as const, degrees: [0] },
 });
-const row: StripAttempt = async (job) => {
-  let x = 0;
-  const placements = job.parts.flatMap((part) =>
-    Array.from({ length: part.quantity }, (_, copyIndex) => {
-      const placement = { partId: part.id, copyIndex, xMm: x, yMm: 0, angleDeg: 0 };
-      x += part.outer[1][0];
-      return placement;
-    }),
-  );
+const virtualLayout = (job: Job): Result | undefined => {
+  expect(job.settings.sheetStock).toBeUndefined();
+  expect(job.settings.sheetCount).toBeUndefined();
+  const boards = job.settings.virtualBoards!.map((board) => ({
+    left: Math.min(...board.outer.map(([x]) => x)),
+    right: Math.max(...board.outer.map(([x]) => x)),
+    top: Math.max(...board.outer.map(([, y]) => y)),
+    x: Math.min(...board.outer.map(([x]) => x)),
+    y: Math.min(...board.outer.map(([, y]) => y)),
+    rowHeight: 0,
+  }));
+  const placements: Result['placements'] = [];
+  let usedLengthMm = 0;
+  for (const part of job.parts) {
+    const size = part.outer[1][0];
+    for (let copyIndex = 0; copyIndex < part.quantity; copyIndex++) {
+      let placed = false;
+      for (const board of boards) {
+        if (board.x + size > board.right) {
+          board.x = board.left;
+          board.y += board.rowHeight + job.settings.clearanceMm;
+          board.rowHeight = 0;
+        }
+        if (board.x + size > board.right || board.y + size > board.top) continue;
+        placements.push({
+          partId: part.id,
+          copyIndex,
+          xMm: board.x,
+          yMm: board.y,
+          angleDeg: 0,
+        });
+        usedLengthMm = Math.max(usedLengthMm, board.x + size);
+        board.x += size + job.settings.clearanceMm;
+        board.rowHeight = Math.max(board.rowHeight, size);
+        placed = true;
+        break;
+      }
+      if (!placed) return undefined;
+    }
+  }
   return {
     documentRevision: 0,
     solverRevision: 'test',
     seed: '',
     elapsedSeconds: 0,
-    usedLengthMm: x,
+    usedLengthMm,
     placements,
     validation: {
-      status: 'passed',
-      overlapAreaMm2: 0,
-      maxBoundaryViolationMm: 0,
+      status: 'pending',
+      overlapAreaMm2: null,
+      maxBoundaryViolationMm: null,
       minClearanceMm: null,
       errors: [],
     },
   };
 };
+const row: StripAttempt = async (job) => virtualLayout(job);
 const sheetJob = (parts: Job['parts']): Job => ({
   name: 'Priority',
   parts,
@@ -105,17 +138,20 @@ describe('part priorities', () => {
     );
   });
 
-  it('selects smaller high-priority parts before larger low-priority parts in every round', async () => {
+  it('orders joint demand by priority and removes the larger low-priority part after failure', async () => {
     vi.useFakeTimers();
     const low = square(10),
       high = square(6, 5);
+    const input = sheetJob([low, high]);
     let round = 0;
-    const first = new Map<number, string>();
+    const demands = new Map<number, { id: string; quantity: number }[]>();
     const pending = solveSheets(
-      sheetJob([low, high]),
+      input,
       async (job) => {
-        if (!first.has(round)) first.set(round, job.parts[0].id);
-        return row(job);
+        if (!demands.has(round)) {
+          demands.set(round, job.parts.map(({ id, quantity }) => ({ id, quantity })));
+        }
+        return virtualLayout(job);
       },
       {
         onProgress: (progress) => {
@@ -125,22 +161,36 @@ describe('part priorities', () => {
     );
     await vi.advanceTimersByTimeAsync(10_000);
     const outcome = await pending;
-    expect(first.size).toBeGreaterThan(1);
-    expect([...first.values()].every((id) => id === high.id)).toBe(true);
+    expect(demands.get(0)).toEqual([
+      { id: high.id, quantity: 1 },
+      { id: low.id, quantity: 1 },
+    ]);
+    expect(demands.get(1)).toEqual([{ id: high.id, quantity: 1 }]);
+    expect(outcome.result.sheets!.flatMap((sheet) => sheet.result.placements)
+      .map((placement) => placement.partId)).toEqual([high.id]);
     expect(outcome.result.unplaced).toEqual([{ partId: low.id, quantity: 1 }]);
+    expect(validate(input, outcome.result).status).toBe('passed');
+    for (const sheet of outcome.result.sheets!) {
+      expect(validate(sheet.job, sheet.result).status).toBe('passed');
+    }
   });
 
-  it('does not replace one high-priority copy with two low-priority copies in a later round', async () => {
+  it('preserves one high-priority copy while reducing two low-priority copies after joint failures', async () => {
     vi.useFakeTimers();
     const low = square(5, 0, 2),
       high = square(10, 5);
+    const input = sheetJob([low, high]);
     let round = 0;
+    const demands = new Map<number, { high: number; low: number }>();
     const candidates: Result[] = [];
     const pending = solveSheets(
-      sheetJob([low, high]),
+      input,
       async (job) => {
-        if (round > 0 && job.parts.some((part) => part.id === high.id)) return undefined;
-        return row(job);
+        demands.set(round, {
+          high: job.parts.find((part) => part.id === high.id)?.quantity ?? 0,
+          low: job.parts.find((part) => part.id === low.id)?.quantity ?? 0,
+        });
+        return virtualLayout(job);
       },
       {
         onProgress: (progress) => {
@@ -151,9 +201,19 @@ describe('part priorities', () => {
     );
     await vi.advanceTimersByTimeAsync(10_000);
     const outcome = await pending;
-    expect(candidates.some((result) => result.sheets?.[0]?.job.parts[0].id === low.id)).toBe(true);
-    expect(outcome.result.sheets![0].job.parts[0].id).toBe(high.id);
+    expect(demands.get(0)).toEqual({ high: 1, low: 2 });
+    expect(demands.get(1)).toEqual({ high: 1, low: 1 });
+    expect(demands.get(2)).toEqual({ high: 1, low: 0 });
+    expect([...demands.values()].every((demand) => demand.high === 1)).toBe(true);
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates.every((result) => result.sheets!.flatMap((sheet) => sheet.result.placements)
+      .every((placement) => placement.partId === high.id))).toBe(true);
+    expect(outcome.result.sheets![0].job.parts).toEqual([{ ...high, quantity: 1 }]);
     expect(outcome.result.unplaced).toEqual([{ partId: low.id, quantity: 2 }]);
+    expect(validate(input, outcome.result).status).toBe('passed');
+    for (const sheet of outcome.result.sheets!) {
+      expect(validate(sheet.job, sheet.result).status).toBe('passed');
+    }
   });
 
   it('still fills stock with low-priority parts when a high-priority part cannot fit', async () => {

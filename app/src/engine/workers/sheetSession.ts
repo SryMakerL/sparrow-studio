@@ -1,9 +1,45 @@
 import type { Job, Result } from '../model';
-import { SOLVER_REVISION } from '../model';
+import { SOLVER_REVISION, POLICY } from '../model';
+import { bounds } from '../geometry/normalize';
+import { transform } from '../geometry/validate';
 import type { Candidate } from './protocol';
 
 const key = (result: Result) =>
   JSON.stringify([result.seed, result.usedLengthMm, result.placements]);
+
+function candidateScore(job: Job, result: Result): number[] {
+  const boards = job.settings.virtualBoards;
+  if (!boards) return [result.usedLengthMm];
+  const boxes = boards.map((board) => bounds(board.outer));
+  const parts = new Map(job.parts.map((part) => [part.id, part]));
+  const used = new Map<number, number>();
+  for (const placement of result.placements) {
+    const part = parts.get(placement.partId);
+    if (!part) return [Infinity];
+    const box = bounds(transform(part.outer, placement));
+    const index = boxes.findIndex(
+      (board) =>
+        box[0] >= board[0] - POLICY.linearMm &&
+        box[1] >= board[1] - POLICY.linearMm &&
+        box[2] <= board[2] + POLICY.linearMm &&
+        box[3] <= board[3] + POLICY.linearMm,
+    );
+    if (index < 0) return [Infinity];
+    used.set(index, Math.max(used.get(index) ?? 0, box[2] - boxes[index][0]));
+  }
+  return [
+    used.size,
+    [...used.values()].reduce((sum, length) => sum + length, 0),
+    result.usedLengthMm,
+  ];
+}
+
+function compareCandidates(job: Job, left: Result, right: Result): number {
+  const a = candidateScore(job, left),
+    b = candidateScore(job, right);
+  const index = a.findIndex((value, i) => value !== b[i]);
+  return index < 0 ? 0 : a[index] - b[index];
+}
 
 type SessionMessage = {
   type: string;
@@ -24,7 +60,7 @@ type Pending = {
   finish: (error?: string) => void;
 };
 
-/** Owns one worker tree for one physical sheet; only a hard timeout discards it. */
+/** Owns one worker tree for a virtual stitched board combination, not an individual board. */
 export class SheetWorkerSession {
   private worker?: Worker;
   private ready?: Promise<void>;
@@ -151,8 +187,8 @@ export class SheetWorkerSession {
             pending.job.parts.reduce((sum, part) => sum + part.quantity, 0);
         if (
           !pending.best ||
-          result.usedLengthMm < pending.best.usedLengthMm ||
-          (compressing && result.usedLengthMm === pending.best.usedLengthMm)
+          compareCandidates(pending.job, result, pending.best) < 0 ||
+          (compressing && compareCandidates(pending.job, result, pending.best) === 0)
         )
           pending.best = result;
         pending.offer?.(result);
@@ -246,8 +282,8 @@ export class SheetWorkerSession {
       };
       const abort = () => {
         this.worker?.postMessage({ type: 'session-cancel', attemptId: id });
-        // Search steps return immediately after construction. Compression uses a soft interrupt;
-        // the watchdog remains armed until Rust has returned to its event loop.
+        // Joint search and compression stop cooperatively; the watchdog remains armed
+        // until Rust has returned to its event loop.
       };
       const timer = Number.isFinite(remaining)
         ? setTimeout(() => {

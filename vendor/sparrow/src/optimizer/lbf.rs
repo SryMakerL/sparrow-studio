@@ -134,7 +134,8 @@ impl LBFBuilder {
     fn find_placement(&mut self, item_id: usize) -> Option<SPPlacement> {
         let layout = &self.prob.layout;
         let item = self.instance.item(item_id);
-        let evaluator = LBFEvaluator::new(layout, item);
+        let boards = self.instance.stock_constraints.as_ref().map_or(&[][..], |stock| stock.boards.as_slice());
+        let evaluator = LBFEvaluator::new(layout, item).with_stock_boards(boards);
 
         let (best_sample, _) = search_placement(
             layout,

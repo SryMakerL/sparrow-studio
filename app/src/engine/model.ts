@@ -32,12 +32,27 @@ export type SheetStock = {
 );
 export type Preset = 'standard' | 'fast';
 export type TimeLimit = 10 | 30 | 60 | 120 | 300 | 600 | null;
+export type SheetCycleBudget = {
+  localMs: number;
+  globalMs: number;
+  evacuationMs: number;
+  localPercent: number;
+  globalPercent: number;
+  evacuationPercent: number;
+  maxRounds: number;
+  stallRounds: number;
+};
+export { DEFAULT_SHEET_CYCLE_BUDGET } from './sheetCycleBudget';
 /** Solver-facing settings of one strip packing job. */
 export type JobSettings = {
+  sheetCycleBudget?: SheetCycleBudget;
   sheetStocks?: SheetStock[];
   sheetStock?: SheetStock;
+  /** Solver-internal domains of horizontally translated, unrotated physical boards. */
+  virtualBoards?: { outer: Ring; holes: Ring[] }[];
   sheetLengthMm?: number;
   sheetCount?: number;
+  /** @deprecated Compatibility only; ignored by the solver. */
   sheetCompressionSeconds?: number;
   sheetInsertionWarmStartSeconds?: number;
   sheetInsertionFailures?: number;
@@ -84,7 +99,7 @@ export const DEFAULT_SETTINGS: JobSettings = {
   clearanceMm: 0,
   timeLimitSeconds: null,
 };
-export const SOLVER_REVISION = '7f0e10f946f70a86138d3938548a13ee46464f39+studio-static-stock-1';
+export const SOLVER_REVISION = '7f0e10f946f70a86138d3938548a13ee46464f39+studio-stage-budgets-7';
 export const LIMITS = { extent: 100000 };
 // DXF exports draw the sheet on this layer; DXF import leaves it out unless chosen, so exports reimport as their parts.
 export const SHEET_LAYER = 'SPARROW_SHEET';

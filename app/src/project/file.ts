@@ -1,5 +1,6 @@
 import { normalizeSheetStocks } from '../engine/stock';
-import type { SheetStock } from '../engine/model';
+import type { Result, SheetStock } from '../engine/model';
+import { normalizeSheetCycleBudget } from '../engine/sheetCycleBudget';
 import { validate } from '../engine/geometry/validate';
 import { normalizeJob } from '../engine/geometry/normalize';
 import { LIMITS, MAX_SOLVER_THREADS } from '../engine/model';
@@ -66,14 +67,6 @@ export function parseProject(value: unknown): ProjectDocument {
     (settings.threads as number) > MAX_SOLVER_THREADS
   )
     return fail('invalid solver settings.');
-  const sheetCompressionSeconds =
-    settings.sheetCompressionSeconds === undefined ? 10 : settings.sheetCompressionSeconds;
-  if (
-    !Number.isInteger(sheetCompressionSeconds) ||
-    (sheetCompressionSeconds as number) < 1 ||
-    (sheetCompressionSeconds as number) > 600
-  )
-    return fail('invalid sheet compression duration.');
   const sheetInsertionWarmStartSeconds =
     settings.sheetInsertionWarmStartSeconds === undefined
       ? 10
@@ -112,7 +105,7 @@ export function parseProject(value: unknown): ProjectDocument {
     });
     return part.rotations ? { ...checked, rotations } : checked;
   });
-  for (const solution of project.solutions) {
+  const solutions = project.solutions.map((solution) => {
     if (
       !isRecord(solution) ||
       !solution.job ||
@@ -120,10 +113,20 @@ export function parseProject(value: unknown): ProjectDocument {
       !['Complete', 'Stopped'].includes(solution.stopReason)
     )
       return fail('invalid solution.');
-    normalizeJob(solution.job);
-    const checked = validate(solution.job, solution.result);
+    const job = normalizeJob(solution.job);
+    const checked = validate(job, solution.result);
     if (checked.status !== 'passed') return fail(`invalid solution: ${checked.errors.join(' ')}`);
-  }
+    const result: Result = solution.result.sheets
+      ? {
+          ...solution.result,
+          sheets: solution.result.sheets.map((sheet) => ({
+            ...sheet,
+            job: normalizeJob(sheet.job),
+          })),
+        }
+      : solution.result;
+    return { ...solution, job, result };
+  });
   return {
     ...project,
     stock:
@@ -135,10 +138,11 @@ export function parseProject(value: unknown): ProjectDocument {
         : project.stock,
     settings: {
       ...project.settings,
-      sheetCompressionSeconds: sheetCompressionSeconds as number,
       sheetInsertionWarmStartSeconds: sheetInsertionWarmStartSeconds as number,
       sheetInsertionFailures: sheetInsertionFailures as number,
+      sheetCycleBudget: normalizeSheetCycleBudget(settings.sheetCycleBudget),
     },
+    solutions,
     parts,
   };
 }

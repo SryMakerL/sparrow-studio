@@ -98,7 +98,7 @@ describe('project document', () => {
         ...project,
         settings: { ...legacy, sheetStagnationSeconds },
       });
-      expect(parsed.settings.sheetCompressionSeconds).toBe(10);
+      expect(parsed.settings).not.toHaveProperty('sheetCompressionSeconds');
       expect(parsed.settings.sheetInsertionWarmStartSeconds).toBe(10);
       expect(parsed.settings.sheetInsertionFailures).toBe(3);
     }
@@ -107,9 +107,8 @@ describe('project document', () => {
         .sheetInsertionFailures,
     ).toBe(3);
     expect(
-      parseProject({ ...project, settings: { ...legacy, sheetInsertionFailures: 8 } }).settings
-        .sheetCompressionSeconds,
-    ).toBe(10);
+      parseProject({ ...project, settings: { ...legacy, sheetInsertionFailures: 8 } }).settings,
+    ).not.toHaveProperty('sheetCompressionSeconds');
     for (const field of [
       'sheetCompressionSeconds',
       'sheetInsertionWarmStartSeconds',
@@ -133,13 +132,54 @@ describe('project document', () => {
       ...job,
       settings: { ...settings, sheetStagnationSeconds: 15 },
     } as typeof job);
-    expect(normalized.settings.sheetCompressionSeconds).toBe(10);
+    expect(project.settings).not.toHaveProperty('sheetCompressionSeconds');
+    expect(job.settings).not.toHaveProperty('sheetCompressionSeconds');
+    expect(normalized.settings).not.toHaveProperty('sheetCompressionSeconds');
     expect(normalized.settings.sheetInsertionWarmStartSeconds).toBe(10);
     expect(normalized.settings.sheetInsertionFailures).toBe(3);
   });
 
   it.each([
-    ['sheetCompressionSeconds', 1, 600],
+    1,
+    10,
+    120,
+    0,
+    -1,
+    601,
+    1.5,
+    NaN,
+    Infinity,
+    null,
+    '3',
+    false,
+    {},
+    undefined,
+  ])(
+    'ignores legacy sheetCompressionSeconds %s without blocking or changing jobs',
+    (sheetCompressionSeconds) => {
+      const project = addParts(newProject('Legacy job'), [square(10)]);
+      const job = projectJob(project);
+      const changed = {
+        ...project,
+        settings: { ...project.settings, sheetCompressionSeconds },
+      } as typeof project;
+      const parsed = parseProject(changed);
+      expect(startBlockers(changed)).toEqual([]);
+      expect(startBlockers(parsed)).toEqual([]);
+      expect(projectJob(parsed)).toEqual(job);
+      expect(projectJob(parsed).settings).not.toHaveProperty('sheetCompressionSeconds');
+      const legacyJob = {
+        ...job,
+        settings: { ...job.settings, sheetCompressionSeconds },
+      } as typeof job;
+      expect(normalizeJob(legacyJob)).toEqual(normalizeJob(job));
+      expect(normalizeJob(legacyJob).settings).not.toHaveProperty('sheetCompressionSeconds');
+      expect(jobKey(legacyJob)).toBe(jobKey(job));
+      expect(jobKey(projectJob(parsed))).toBe(jobKey(job));
+    },
+  );
+
+  it.each([
     ['sheetInsertionWarmStartSeconds', 1, 600],
     ['sheetInsertionFailures', 1, 100],
   ] as const)('validates %s in files, solver jobs and start blockers', (field, min, max) => {
@@ -170,10 +210,10 @@ describe('project document', () => {
     const parsed = parseProject(JSON.parse(serializeProject(project)));
     expect(parsed).toEqual(project);
     expect(projectJob(parsed).settings).toMatchObject({
-      sheetCompressionSeconds: 24,
       sheetInsertionWarmStartSeconds: 37,
       sheetInsertionFailures: 7,
     });
+    expect(projectJob(parsed).settings).not.toHaveProperty('sheetCompressionSeconds');
     expect(jobKey(projectJob(parsed))).toBe(key);
   });
 

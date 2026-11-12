@@ -8,11 +8,21 @@ use crate::probs::spp::util::assertions;
 use anyhow::{Result, ensure};
 use std::{iter, sync::Arc};
 
+/// Original physical board geometry in immutable stock coordinates.
+/// Sampling hints only; collision obstacles remain the placement authority.
+#[derive(Debug, Clone)]
+pub struct SPBoardDomain {
+    pub outer: SPolygon,
+    pub holes: Vec<SPolygon>,
+}
+
 /// Immutable stock geometry, shared by instances and solution snapshots.
 #[derive(Debug, Clone)]
 pub struct SPStockConstraints {
     pub max_width: f32,
     pub holes: InferiorQualityZone,
+    /// Empty for legacy single-stock inputs.
+    pub boards: Vec<SPBoardDomain>,
 }
 
 #[derive(Debug, Clone)]

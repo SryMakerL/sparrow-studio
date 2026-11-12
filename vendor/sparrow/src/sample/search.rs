@@ -40,19 +40,42 @@ pub fn search_placement(l: &Layout, item: &Item, ref_pk: Option<PItemKey>, mut e
     };
     let container_sampler = UniformBBoxSampler::new(l.container.outer_cd.bbox, item, l.container.outer_cd.bbox);
 
-    //Perform the focussed sampling
+    // Rejection work is bounded; every fifth candidate retains the original exploration.
+    let mut board_sampler = crate::sample::board_sampler::BoardSampler::new(
+        evaluator.stock_boards(), item, l.container.outer_cd.bbox, l.container.outer_cd.bbox,
+    );
+    let mut focussed_board_sampler = ref_pk.and_then(|pk| {
+        crate::sample::board_sampler::BoardSampler::new(
+            evaluator.stock_boards(), item, l.placed_items[pk].shape.bbox, l.container.outer_cd.bbox,
+        )
+    });
+
     if let Some(focussed_sampler) = focussed_sampler {
-        for _ in 0..sample_config.n_focussed_samples {
-            let dt = focussed_sampler.sample(rng);
+        for i in 0..sample_config.n_focussed_samples {
+            let board_dt = if i % 5 != 0 {
+                focussed_board_sampler.as_mut().and_then(|sampler| sampler.sample(evaluator.stock_boards(), item, rng))
+            } else { None };
+            let dt = board_dt.unwrap_or_else(|| focussed_sampler.sample(rng));
             let eval = evaluator.evaluate_sample(dt, Some(best_samples.upper_bound()));
             best_samples.report(dt, eval);
         }
     }
 
-    //Perform the container-wide sampling
+    let edge_anchors = if board_sampler.is_some() {
+        l.placed_items.iter().filter(|(key, _)| Some(*key) != ref_pk)
+            .take(64).map(|(_, placed)| placed.shape.bbox).collect::<Vec<_>>()
+    } else { Vec::new() };
     if let Some(container_sampler) = container_sampler {
-        for _ in 0..sample_config.n_container_samples {
-            let dt = container_sampler.sample(rng);
+        for i in 0..sample_config.n_container_samples {
+            let board_dt = if i % 5 != 0 {
+                board_sampler.as_mut().and_then(|sampler| {
+                    let edge = if i % 5 == 1 {
+                        sampler.sample_edge(evaluator.stock_boards(), item, &edge_anchors, rng)
+                    } else { None };
+                    edge.or_else(|| sampler.sample(evaluator.stock_boards(), item, rng))
+                })
+            } else { None };
+            let dt = board_dt.unwrap_or_else(|| container_sampler.sample(rng));
             let eval = evaluator.evaluate_sample(dt, Some(best_samples.upper_bound()));
             best_samples.report(dt, eval);
         }
