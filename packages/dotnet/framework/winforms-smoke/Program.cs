@@ -19,7 +19,10 @@ internal static class Program
             string page = (string)read.Invoke(null, null);
             Check(System.Text.Encoding.UTF8.GetByteCount(page) < 2000000 && !page.Contains("innerHTML"), "embedded self-contained resource boundary");
             BudgetContracts();
-            if (args.Contains("--contracts-only")) { Console.WriteLine("PASS managed budget contracts only; native/WebView2 not exercised"); return 0; }
+            AutoSheetContracts();
+            if (args.Contains("--contracts-only")) { Console.WriteLine("PASS managed budget/auto-sheet contracts only; native/WebView2 not exercised"); return 0; }
+            Run("auto"); Run("autostop");
+            if (args.Contains("--auto-only")) { Console.WriteLine("PASS automatic-sheet WebView2/native preview smoke scenarios"); return 0; }
             Run("budget"); Run("apply"); Run("stop"); Run("stopcancel"); Run("stopclose"); Run("stoppartial"); Run("cancel"); Run("close"); Run("dispose");
             Console.WriteLine("PASS all WebView2/native preview smoke scenarios"); return 0;
         }
@@ -67,11 +70,62 @@ internal static class Program
             Check((bool)apply.Invoke(dialog, new object[] { auto }) && dialog.EffectiveJob.Settings.TimeLimitSeconds == null, "automatic budget retains null deadline");
         }
     }
+    private static void AutoSheetContracts()
+    {
+        Check(!new JobSettings().AutoAddSheets, "automatic sheets defaults false");
+        var source = Job(30); source.Settings.AutoAddSheets = true; source.Settings.SheetCount = null;
+        using (var dialog = new NestingPreviewDialog(source))
+        {
+            var serialized = Newtonsoft.Json.Linq.JObject.Parse(Json(dialog.EffectiveJob));
+            Check((bool)serialized["settings"]["autoAddSheets"] && serialized["settings"]["sheetCount"] == null && serialized["settings"]["sheetStocks"] == null, "EffectiveJob auto camelCase without inventory count");
+            source.Settings.AutoAddSheets = false;
+            var snapshot = dialog.EffectiveJob; snapshot.Settings.AutoAddSheets = false; snapshot.Settings.SheetCount = 99;
+            Check(dialog.EffectiveJob.Settings.AutoAddSheets && dialog.EffectiveJob.Settings.SheetCount == null, "automatic sheet snapshot isolated from source and caller");
+            var receive = typeof(NestingPreviewDialog).GetMethod("ReceiveMessage", Flags);
+            typeof(NestingPreviewDialog).GetField("ready", Flags).SetValue(dialog, true);
+            string before = Json(dialog.EffectiveJob);
+            foreach (var patch in new[] { "{\"autoAddSheets\":false}", "{\"sheetCount\":1}", "{\"sheetStocks\":[]}", "{\"sheetStock\":{}}", "{\"materialWidthMm\":999}", "{\"sheetLengthMm\":999}", "{\"parts\":[]}" })
+            {
+                var settings = Budget(); settings.Merge(Newtonsoft.Json.Linq.JObject.Parse(patch));
+                receive.Invoke(dialog, new object[] { new Newtonsoft.Json.Linq.JObject { ["type"] = "start", ["settings"] = settings }.ToString() });
+                settings.Remove("sheetCompressionSeconds");
+                receive.Invoke(dialog, new object[] { new Newtonsoft.Json.Linq.JObject { ["type"] = "start", ["settings"] = settings }.ToString() });
+                Check(!(bool)typeof(NestingPreviewDialog).GetField("started", Flags).GetValue(dialog) && Json(dialog.EffectiveJob) == before, "start cannot mutate sheet policy or geometry: " + patch);
+            }
+            Check((bool)typeof(NestingPreviewDialog).GetMethod("ApplyBudgetSettings", Flags).Invoke(dialog, new object[] { Budget() }) && dialog.EffectiveJob.Settings.AutoAddSheets && dialog.EffectiveJob.Settings.SheetCount == null, "budget edits preserve automatic sheets");
+            var passed = new Validation { Status = "passed" };
+            var aggregate = new Result { Reason = "Complete", Validation = passed, Unplaced = new UnplacedPart[0], Placements = new Placement[0], Sheets = Enumerable.Range(0, 4).Select(i => new SheetResult(new Job { Parts = new[] { new Part { Id = "a", Quantity = 1, Outer = source.Parts[0].Outer } }, Settings = new JobSettings { MaterialWidthMm = 100, SheetLengthMm = 100 } }, new Result { Validation = passed, Placements = new[] { new Placement { PartId = "a", CopyIndex = 0 } } })).ToArray() };
+            var complete = typeof(NestingPreviewDialog).GetMethod("Complete", BindingFlags.Static | BindingFlags.NonPublic);
+            Check((bool)complete.Invoke(null, new object[] { dialog.EffectiveJob, aggregate, passed }), "aggregate completeness needs no sheetCount (synthetic contract only)");
+            var explain = typeof(NestingPreviewDialog).GetMethod("ExplainFrozenRejection", BindingFlags.Static | BindingFlags.NonPublic);
+            Check(explain.Invoke(null, new object[] { dialog.EffectiveJob, aggregate, passed }) == null, "valid frozen snapshot has no rejection reason");
+            string detail = (string)explain.Invoke(null, new object[] { dialog.EffectiveJob, aggregate, new Validation { Status = "failed", Errors = new[] { "Sheet stock snapshot differs from inventory" } } });
+            Check(detail.Contains("Sheet stock snapshot differs from inventory"), "zero missing reports exact independent validation error");
+            aggregate.Sheets[0].Result.Cancelled = true;
+            detail = (string)explain.Invoke(null, new object[] { dialog.EffectiveJob, aggregate, passed });
+            Check(detail.Contains("取消"), "zero missing reports cancelled child board");
+            aggregate.Sheets[0].Result.Cancelled = false;
+            aggregate.Sheets[0].Result.Placements[0].CopyIndex = 99;
+            detail = (string)explain.Invoke(null, new object[] { dialog.EffectiveJob, aggregate, passed });
+            Check(detail.Contains("副本"), "zero missing reports incorrect copy identity");
+            aggregate.Sheets[0].Result.Placements[0].CopyIndex = 0;
+            aggregate.Sheets = aggregate.Sheets.Take(3).ToArray();
+            Check(!(bool)complete.Invoke(null, new object[] { dialog.EffectiveJob, aggregate, passed }), "aggregate missing demand rejected without sheetCount");
+        }
+    }
     private static void Check(bool condition, string name) { if (!condition) throw new Exception("FAIL " + name); Console.WriteLine("PASS " + name); }
     private static Job Job(int seconds) => new Job { Name = "Smoke <script>not markup</script>", Parts = new[] { new Part { Id = "a", Quantity = 4, Outer = new[] { new[] { -30d, -30d }, new[] { 30d, -30d }, new[] { 30d, 30d }, new[] { -30d, 30d } } } }, Settings = new JobSettings { MaterialWidthMm = 100, SheetLengthMm = 100, SheetCount = 4, TimeLimitSeconds = seconds, SheetCompressionSeconds = 1, SheetInsertionWarmStartSeconds = 1, SheetInsertionFailures = 1 } };
+    private static void CheckAutoSheets(Result result, string mode)
+    {
+        Check(result.Sheets != null && result.Sheets.Length >= 3 && result.Sheets.All(s => s.Job.Settings.SheetLengthMm == 100 && s.Job.Settings.MaterialWidthMm == 100 && !s.Job.Settings.AutoAddSheets && s.Result.Placements.Length > 0), mode + " automatic three-plus same-size boards with nonautomatic child jobs");
+        Check(result.Unplaced != null && result.Unplaced.Length == 0 && result.Sheets.Sum(s => s.Result.Placements.Length) == 4, mode + " automatic aggregate complete demand");
+    }
     private static void Run(string mode)
     {
-        using (var dialog = new NestingPreviewDialog(Job(mode == "apply" ? 10 : 30)))
+        bool automatic = mode == "auto" || mode == "autostop";
+        var solveJob = Job(mode == "apply" || mode == "auto" ? 10 : 30);
+        if (automatic) { solveJob.Settings.AutoAddSheets = true; solveJob.Settings.SheetCount = null; }
+        using (var dialog = new NestingPreviewDialog(solveJob))
         {
             Exception failure = null; bool snapshots = false;
             dialog.Shown += async (sender, args) =>
@@ -91,6 +145,12 @@ internal static class Program
                     if (dialog.Error != null) throw dialog.Error;
                     if (!(bool)ready.GetValue(dialog) && browser.CoreWebView2 != null) Console.WriteLine("DIAG " + browser.Source + " " + await browser.ExecuteScriptAsync("JSON.stringify({url:location.href,text:document.body.innerText,chrome:!!window.chrome.webview})"));
                     Check((bool)ready.GetValue(dialog), mode + " WebView2 initialized/page ready");
+                    if (automatic)
+                    {
+                        Check(await browser.ExecuteScriptAsync("document.getElementById('sheetPolicy').textContent==='同尺寸板面自动追加 / 无库存数量限制' && !document.querySelector('[name=sheetCount],#sheetCount,#autoAddSheets,#sheetStocks')") == "true", mode + " read-only automatic sheet status without inventory editor");
+                        var settings = Newtonsoft.Json.Linq.JObject.Parse(Json(dialog.EffectiveJob))["settings"];
+                        Check((bool)settings["autoAddSheets"] && settings["sheetCount"] == null, mode + " actual host auto job has no sheetCount");
+                    }
                     bool remoteBlocked = false;
                     browser.CoreWebView2.NavigationStarting += (s, e) => { if (e.Uri.StartsWith("https://")) remoteBlocked = e.Cancel; };
                     await browser.ExecuteScriptAsync("fetch('https://example.invalid/').then(()=>window.__network=false).catch(()=>window.__network=true);location.href='https://example.invalid/';");
@@ -116,7 +176,7 @@ internal static class Program
                         await browser.ExecuteScriptAsync("window.chrome.webview.postMessage({type:'start',settings:{timeLimitSeconds:600,sheetInitialSearchSeconds:600,sheetInsertionWarmStartSeconds:600,sheetCompressionSeconds:600,sheetInsertionFailures:100}})");
                         await Task.Delay(50); Check(Json(dialog.EffectiveJob) == locked, "second start cannot change active settings");
                     }
-                    if (mode == "apply" || mode == "budget")
+                    if (mode == "apply" || mode == "budget" || mode == "auto")
                     {
                         for (int i = 0; !(bool)typeof(NestingPreviewDialog).GetField("canApply", Flags).GetValue(dialog) && dialog.Error == null && i < 600; i++) await Task.Delay(50);
                         if (dialog.Error != null)
@@ -135,6 +195,7 @@ internal static class Program
                         Check(await browser.ExecuteScriptAsync("(()=>{const c=document.getElementById('canvas'),v=c.getAttribute('viewBox');document.getElementById('plus').click();return v!==c.getAttribute('viewBox')})()") == "true", "SVG zoom changes viewBox");
                         Check(await browser.ExecuteScriptAsync("document.getElementById('jobName').textContent.includes('<script>')") == "true", "user job label rendered as text");
                         var saved = (Result)typeof(NestingPreviewDialog).GetField("candidate", Flags).GetValue(dialog);
+                        if (automatic) CheckAutoSheets(saved, mode);
                         if (mode == "budget") Check(saved.Sheets.All(s => s.Job.Settings.TimeLimitSeconds == 17 && s.Job.Settings.SheetInitialSearchSeconds == .2 && s.Job.Settings.SheetInsertionWarmStartSeconds == 2 && s.Job.Settings.SheetCompressionSeconds == 2 && s.Job.Settings.SheetInsertionFailures == 1), "native child settings reflect edited budgets on every board");
                         Check(await browser.ExecuteScriptAsync("document.getElementById('budgetSettings').disabled && [...document.querySelectorAll('#budgetSettings input,#budgetSettings select')].every(n=>n.disabled)") == "true", mode + " controls remain locked after completion");
                         var complete = typeof(NestingPreviewDialog).GetMethod("Complete", BindingFlags.Static | BindingFlags.NonPublic);
@@ -147,7 +208,7 @@ internal static class Program
                         Check(await browser.ExecuteScriptAsync("document.getElementById('current').classList.contains('selected') && document.querySelectorAll('#canvas path').length>0") == "true", "actual current round remains viewable");
                         await browser.ExecuteScriptAsync("document.getElementById('apply').click()");
                     }
-                    else if (mode.StartsWith("stop"))
+                    else if (mode.StartsWith("stop") || mode == "autostop")
                     {
                         var currentField = typeof(NestingPreviewDialog).GetField("currentRound", Flags);
                         var covered = typeof(NestingPreviewDialog).GetMethod("Covered", BindingFlags.Static | BindingFlags.NonPublic);
@@ -158,11 +219,17 @@ internal static class Program
                         {
                             current = (Result)currentField.GetValue(dialog);
                             if (i % 50 == 0) Console.WriteLine("WAIT CURRENT " + mode + " " + elapsed.Elapsed.TotalSeconds.ToString("F1") + "s boards=" + (current?.Sheets?.Length ?? 0));
-                            if (current != null && (bool)covered.Invoke(null, new object[] { Job(30), current, new NestingSolver().Validate(Job(30), current) })) break;
+                            if (current != null && (bool)covered.Invoke(null, new object[] { dialog.EffectiveJob, current, new NestingSolver().Validate(dialog.EffectiveJob, current) })) break;
                             if (dialog.Error != null) throw dialog.Error;
                             await Task.Delay(40);
                         }
-                        Check(current != null && (bool)covered.Invoke(null, new object[] { Job(30), current, new NestingSolver().Validate(Job(30), current) }), mode + " complete real native current before deadline");
+                        Check(current != null && (bool)covered.Invoke(null, new object[] { dialog.EffectiveJob, current, new NestingSolver().Validate(dialog.EffectiveJob, current) }), mode + " complete real native current before deadline");
+                        if (automatic)
+                        {
+                            CheckAutoSheets(current, mode);
+                            await browser.ExecuteScriptAsync("document.getElementById('current').click();");
+                            Check(await browser.ExecuteScriptAsync("document.querySelectorAll('#canvas path').length===4 && document.getElementById('sheets').textContent==='4' && document.getElementById('parts').textContent==='4 / 0'") == "true", "automatic current multi-board preview complete before stop");
+                        }
                         string selected = Newtonsoft.Json.JsonConvert.SerializeObject(current, SparrowJson.CreateSettings());
                         var different = Newtonsoft.Json.JsonConvert.DeserializeObject<Result>(selected, SparrowJson.CreateSettings());
                         different.Sheets[0].Result.Placements[0].XMm += 1;
@@ -175,7 +242,19 @@ internal static class Program
                             snapshotMethod.Invoke(dialog, new object[] { new SessionSnapshot { Events = new[] { new Newtonsoft.Json.Linq.JObject { ["type"] = "current-round", ["result"] = Newtonsoft.Json.Linq.JObject.FromObject(partial, Newtonsoft.Json.JsonSerializer.Create(SparrowJson.CreateSettings())) } } } });
                             selected = Newtonsoft.Json.JsonConvert.SerializeObject(partial, SparrowJson.CreateSettings());
                         }
-                        await browser.ExecuteScriptAsync("document.getElementById('stop').click()");
+                        if (mode == "stoppartial")
+                        {
+                            typeof(NestingPreviewDialog).GetMethod("ReceiveMessage", Flags).Invoke(dialog, new object[] { "{\"type\":\"stop\"}" });
+                        }
+                        else
+                        {
+                            browser.CoreWebView2.WebMessageReceived += (s, e) =>
+                            {
+                                if (e.WebMessageAsJson.Contains("stop") && (bool)typeof(NestingPreviewDialog).GetField("stopRequested", Flags).GetValue(dialog))
+                                    selected = Newtonsoft.Json.JsonConvert.SerializeObject(currentField.GetValue(dialog), SparrowJson.CreateSettings());
+                            };
+                            await browser.ExecuteScriptAsync("document.getElementById('stop').click()");
+                        }
                         for (int i = 0; !(bool)typeof(NestingPreviewDialog).GetField("stopRequested", Flags).GetValue(dialog) && i < 100; i++) await Task.Delay(10);
                         var frozen = (Result)typeof(NestingPreviewDialog).GetField("frozenCurrent", Flags).GetValue(dialog);
                         Check(frozen != null && Newtonsoft.Json.JsonConvert.SerializeObject(frozen, SparrowJson.CreateSettings()) == selected, mode + " click freezes exact current not best");
@@ -188,7 +267,7 @@ internal static class Program
                         Check(!(bool)typeof(NestingPreviewDialog).GetField("running", Flags).GetValue(dialog), mode + " awaits native safe exit");
                         Check(elapsed.Elapsed.TotalSeconds < 30, mode + " finishes before original 30 second budget");
                         bool applicable = (bool)typeof(NestingPreviewDialog).GetField("canApply", Flags).GetValue(dialog);
-                        if (mode == "stop")
+                        if ((mode == "stop" || mode == "autostop"))
                         {
                             Check(applicable && dialog.StoppedByUser && dialog.Result == null, "stop permits inspection but never auto applies");
                             var chosen = (Result)typeof(NestingPreviewDialog).GetField("candidate", Flags).GetValue(dialog);
@@ -237,8 +316,8 @@ internal static class Program
             };
             var outcome = dialog.ShowDialog();
             if (failure != null) throw failure;
-            if (mode == "apply" || mode == "budget") { Check(outcome == DialogResult.OK && dialog.Result != null, "apply alone returns host result / OK"); Check(snapshots, "real native solve snapshots reached WebView2"); }
-            else if (mode == "stop") Check(outcome == DialogResult.OK && dialog.Result != null && dialog.Result.Reason == "UserStopped" && !dialog.Result.Cancelled && dialog.StoppedByUser && dialog.ResultSelection == "CurrentRound", "explicit apply returns authorized UserStopped result");
+            if (mode == "apply" || mode == "budget" || mode == "auto") { Check(outcome == DialogResult.OK && dialog.Result != null, "apply alone returns host result / OK"); Check(snapshots, "real native solve snapshots reached WebView2"); }
+            else if ((mode == "stop" || mode == "autostop")) Check(outcome == DialogResult.OK && dialog.Result != null && dialog.Result.Reason == "UserStopped" && !dialog.Result.Cancelled && dialog.StoppedByUser && dialog.ResultSelection == "CurrentRound", "explicit apply returns authorized UserStopped result");
             else Check(outcome != DialogResult.OK && dialog.Result == null, mode + " never applies result");
             Check(!(bool)typeof(NestingPreviewDialog).GetField("running", Flags).GetValue(dialog), mode + " closes after native exit");
         }

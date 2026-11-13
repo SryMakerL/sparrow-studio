@@ -15,6 +15,14 @@ pub(crate) struct Kernel {
 
 impl Kernel {
     pub(crate) fn new(job: Job) -> Result<Self, String> {
+        if job.settings.auto_add_sheets
+            || job.settings.sheet_count.is_some()
+            || job.settings.sheet_stocks.is_some()
+        {
+            return Err(
+                "Sheet kernel requires a single-stock catalog, not an aggregate job".into(),
+            );
+        }
         let items: Vec<_> = job.parts.iter().enumerate().map(|(id,p)| json!({"id":id,"demand":1,"priority":p.priority,"allowed_orientations":match &p.rotations { Rotations::Continuous=>None,Rotations::Discrete{degrees}=>Some(degrees.iter().map(|d|d.rem_euclid(360.0)).collect::<Vec<_>>()) },"shape":{"type":"simple_polygon","data":p.outer}})).collect();
         let mut external = json!({"name":job.name,"strip_height":job.settings.material_width_mm,"items":items,"stock_length":job.settings.sheet_length_mm});
         if let Some(SheetStock {

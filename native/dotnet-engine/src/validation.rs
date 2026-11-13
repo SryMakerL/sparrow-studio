@@ -66,7 +66,10 @@ pub(crate) fn check(job: &Job, result: &Value) -> Value {
         if result.get("sheets").is_some() {
             return aggregate(job, result);
         }
-        if job.settings.sheet_count.is_some() || job.settings.sheet_stocks.is_some() {
+        if job.settings.auto_add_sheets
+            || job.settings.sheet_count.is_some()
+            || job.settings.sheet_stocks.is_some()
+        {
             return Err("A multi-sheet job requires a sheet aggregate".into());
         }
         let used = number(result, "usedLengthMm")?;
@@ -218,10 +221,21 @@ fn aggregate(job: &Job, result: &Value) -> Result<(), String> {
         return Err("Aggregate placements must be empty".into());
     }
     let stocks = sheets::stocks(job);
-    let capacity = stocks
-        .iter()
-        .try_fold(0usize, |n, s| n.checked_add(s.quantity))
-        .ok_or("Stock count overflow")?;
+    let capacity = if job.settings.auto_add_sheets {
+        if stocks.len() != 1
+            || job.settings.sheet_count.is_some()
+            || job.settings.sheet_stocks.is_some()
+            || job.settings.sheet_length_mm.is_none()
+        {
+            return Err("Automatic sheets require one fixed stock specification".into());
+        }
+        sheets::demanded_copies(job)?
+    } else {
+        stocks
+            .iter()
+            .try_fold(0usize, |n, s| n.checked_add(s.quantity))
+            .ok_or("Stock count overflow")?
+    };
     if stocks.is_empty()
         || sheets.len() > capacity
         || job
@@ -236,7 +250,8 @@ fn aggregate(job: &Job, result: &Value) -> Result<(), String> {
     let mut length = 0.0;
     for sheet in sheets {
         let child: Job = serde_json::from_value(sheet["job"].clone()).map_err(|e| e.to_string())?;
-        if child.settings.sheet_count.is_some()
+        if child.settings.auto_add_sheets
+            || child.settings.sheet_count.is_some()
             || child.settings.sheet_stocks.is_some()
             || sheet["result"].get("sheets").is_some()
             || sheet["result"].get("unplaced").is_some()
@@ -261,7 +276,7 @@ fn aggregate(job: &Job, result: &Value) -> Result<(), String> {
         }
         let count = used.entry(stock.id.clone()).or_insert(0usize);
         *count += 1;
-        if *count > original.quantity {
+        if !job.settings.auto_add_sheets && *count > original.quantity {
             return Err("Sheet inventory exhausted".into());
         }
         let mut ids = HashSet::new();
@@ -285,6 +300,12 @@ fn aggregate(job: &Job, result: &Value) -> Result<(), String> {
             totals[i] = totals[i]
                 .checked_add(part.quantity)
                 .ok_or("Quantity overflow")?;
+        }
+        if !sheet["result"]["placements"]
+            .as_array()
+            .is_some_and(|placements| !placements.is_empty())
+        {
+            return Err("Aggregate sheets must not be empty".into());
         }
         let checked = check(&child, &sheet["result"]);
         if checked["status"] != "passed" {

@@ -51,6 +51,7 @@ public sealed record JobSettings
     public SheetStock? SheetStock { get; init; }
     public double? SheetLengthMm { get; init; }
     public int? SheetCount { get; init; }
+    public bool AutoAddSheets { get; init; } = false;
     public double? SheetInitialSearchSeconds { get; init; }
     public int? SheetCompressionSeconds { get; init; }
     public int? SheetInsertionWarmStartSeconds { get; init; }

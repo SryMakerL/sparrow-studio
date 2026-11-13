@@ -13,6 +13,8 @@ use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 use serde::{Deserialize, Serialize};
 
 mod abi;
+#[cfg(test)]
+mod auto_sheet_tests;
 mod compression;
 #[cfg(test)]
 mod extended_tests;
@@ -91,6 +93,8 @@ struct Settings {
     solver_preset: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     sheet_length_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    auto_add_sheets: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     sheet_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -211,7 +211,10 @@ pub unsafe extern "C" fn sparrow_session_step_json(
             let mut kernel = lock(&session.kernel);
             if kernel.is_none() {
                 let job = sheets::parse(&session.input)?;
-                if job.settings.sheet_stocks.is_some() || job.settings.sheet_count.is_some() {
+                if job.settings.auto_add_sheets
+                    || job.settings.sheet_stocks.is_some()
+                    || job.settings.sheet_count.is_some()
+                {
                     return Err(
                         "Sheet step requires a single-stock catalog, not an aggregate job".into(),
                     );

@@ -20,7 +20,26 @@ pub(crate) fn stocks(job: &Job) -> Vec<SheetStock> {
     })
 }
 
+pub(crate) fn demanded_copies(job: &Job) -> Result<usize, String> {
+    job.parts
+        .iter()
+        .try_fold(0usize, |n, p| n.checked_add(p.quantity))
+        .ok_or_else(|| "Demand overflow".into())
+}
+
 pub(crate) fn validate_stocks(job: &Job) -> Result<(), String> {
+    if job.settings.auto_add_sheets {
+        if job.settings.sheet_count.is_some()
+            || job.settings.sheet_stocks.is_some()
+            || job.settings.sheet_length_mm.is_none()
+        {
+            return Err(
+                "autoAddSheets requires one sheet specification, no sheetCount or sheetStocks"
+                    .into(),
+            );
+        }
+        demanded_copies(job)?;
+    }
     if job
         .settings
         .sheet_stocks
@@ -159,13 +178,33 @@ fn score(job: &Job, v: &Value) -> Vec<f64> {
         );
     }
     score.push(sheets.len() as f64);
-    for i in 0..job.settings.sheet_count.unwrap_or(0) {
-        score.push(-sheets.get(i).map_or(0.0, |s| {
-            s["result"]["placements"].as_array().unwrap().len() as f64
-        }));
-    }
-    score.push(v["usedLengthMm"].as_f64().unwrap());
     score
+}
+
+fn compare_score(job: &Job, a: &Value, b: &Value) -> std::cmp::Ordering {
+    let prefix = score(job, a).partial_cmp(&score(job, b)).unwrap();
+    if !prefix.is_eq() {
+        return prefix;
+    }
+    let a_sheets = a["sheets"].as_array().unwrap();
+    let b_sheets = b["sheets"].as_array().unwrap();
+    if let Some(count) = job.settings.sheet_count {
+        for i in 0..count.min(a_sheets.len().max(b_sheets.len())) {
+            let copies = |sheets: &[Value]| {
+                sheets
+                    .get(i)
+                    .map_or(0, |s| s["result"]["placements"].as_array().unwrap().len())
+            };
+            let occupancy = copies(b_sheets).cmp(&copies(a_sheets));
+            if !occupancy.is_eq() {
+                return occupancy;
+            }
+        }
+    }
+    a["usedLengthMm"]
+        .as_f64()
+        .unwrap()
+        .total_cmp(&b["usedLengthMm"].as_f64().unwrap())
 }
 
 pub(crate) fn insertion_budget_ms(
@@ -201,7 +240,10 @@ pub(crate) fn run(
         cancel.is_some_and(|c| c.requested.load(Ordering::Relaxed))
             || deadline.is_some_and(|d| Instant::now() >= d)
     };
-    if job.settings.sheet_count.is_none() && job.settings.sheet_stocks.is_none() {
+    if !job.settings.auto_add_sheets
+        && job.settings.sheet_count.is_none()
+        && job.settings.sheet_stocks.is_none()
+    {
         if stopped() {
             return Err("cancelled".into());
         }
@@ -229,7 +271,7 @@ pub(crate) fn run(
     let mut stagnant = 0;
     let mut round = 0u64;
     while !stopped() {
-        let previous = score(&job, &best);
+        let previous = best.clone();
         let mut remaining = initial.clone();
         let mut entries = Vec::new();
         let mut ordered = (0..job.parts.len()).collect::<Vec<_>>();
@@ -254,7 +296,15 @@ pub(crate) fn run(
         ordered.sort_by_key(|i| std::cmp::Reverse(job.parts[*i].priority));
         let mut failed_stocks = std::collections::HashMap::<String, u32>::new();
         for stock in &inventory {
-            for _ in 0..stock.quantity {
+            let mut attempts = 0;
+            while if job.settings.auto_add_sheets {
+                entries.len() < demanded_copies(&job)?
+            } else {
+                attempts < stock.quantity
+            } {
+                if !job.settings.auto_add_sheets {
+                    attempts += 1;
+                }
                 if failed_stocks.get(&stock.id).copied().unwrap_or(0) >= 2 {
                     break;
                 }
@@ -262,6 +312,7 @@ pub(crate) fn run(
                     break;
                 }
                 let mut child = job.clone();
+                child.settings.auto_add_sheets = false;
                 child.settings.sheet_count = None;
                 child.settings.sheet_stocks = None;
                 child.settings.sheet_stock = Some(stock.clone());
@@ -344,7 +395,7 @@ pub(crate) fn run(
                                     json!({"type":"current-round","roundIndex":round,"result":value}),
                                 );
                                 if value["validation"]["status"] == "passed"
-                                    && score(&job, &value) < score(&job, &best)
+                                    && compare_score(&job, &value, &best).is_lt()
                                 {
                                     best = value;
                                     send(json!({"type":"candidate","result":best}));
@@ -434,7 +485,7 @@ pub(crate) fn run(
                                 send(
                                     json!({"type":"current-round","roundIndex":round,"result":value}),
                                 );
-                                if score(&job, &value) < score(&job, &best) {
+                                if compare_score(&job, &value, &best).is_lt() {
                                     best = value;
                                     send(json!({"type":"candidate","result":best}));
                                 }
@@ -478,7 +529,7 @@ pub(crate) fn run(
                     entries.push(json!({"job":child,"result":result}));
                     let value = aggregate(&job, &entries, &remaining, seed, revision, started);
                     if value["validation"]["status"] == "passed"
-                        && score(&job, &value) < score(&job, &best)
+                        && compare_score(&job, &value, &best).is_lt()
                     {
                         best = value;
                         send(json!({"type":"candidate","result":best}));
@@ -489,7 +540,7 @@ pub(crate) fn run(
         if remaining.iter().all(|n| *n == 0) {
             break;
         }
-        stagnant = if score(&job, &best) == previous {
+        stagnant = if compare_score(&job, &best, &previous).is_eq() {
             stagnant + 1
         } else {
             0
@@ -505,8 +556,9 @@ pub(crate) fn run(
             "Stopped"
         } else if best["unplaced"].as_array().unwrap().is_empty() || deadline.is_some() {
             "Complete"
-        } else if best["sheets"].as_array().unwrap().len()
-            >= inventory.iter().map(|s| s.quantity).sum()
+        } else if !job.settings.auto_add_sheets
+            && best["sheets"].as_array().unwrap().len()
+                >= inventory.iter().map(|s| s.quantity).sum()
         {
             "StockExhausted"
         } else {

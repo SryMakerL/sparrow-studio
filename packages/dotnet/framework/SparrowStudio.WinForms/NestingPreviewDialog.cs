@@ -25,6 +25,7 @@ namespace SparrowStudio.WinForms
         private bool hasCurrentRound, stopRequested, discardRequested, nativeFinished;
         public bool StoppedByUser { get; private set; }
         public string ResultSelection { get; private set; }
+        public string LastRejectionReason { get; private set; }
         private bool ready, started, running, closePending, allowClose, canApply, initialNavigation, disposePending;
         private string initialDocument;
         private readonly System.Windows.Forms.Timer heartbeat = new System.Windows.Forms.Timer { Interval = 200 };
@@ -166,8 +167,9 @@ namespace SparrowStudio.WinForms
                     var stoppedSnapshot = frozenCurrent;
                     var frozenValidation = await Task.Run(() => new NestingSolver().Validate(job, stoppedSnapshot));
                     if (discardRequested || closePending || Error != null) { candidate = null; phase = "已取消 · 未应用"; return; }
-                    int missing = Math.Max(0, job.Parts.Sum(p => p.Quantity) - PlacedCount(frozenCurrent));
-                    canApply = Covered(job, frozenCurrent, frozenValidation);
+                    LastRejectionReason = ExplainFrozenRejection(job, frozenCurrent, frozenValidation);
+                    int missing = MissingCount(job, frozenCurrent);
+                    canApply = LastRejectionReason == null;
                     StoppedByUser = true;
                     if (canApply)
                     {
@@ -175,8 +177,12 @@ namespace SparrowStudio.WinForms
                         candidate.Reason = "UserStopped";
                         phase = "已截止待应用 · 用户截止";
                     }
-                    else { candidate = null; phase = "截止快照未完整不可应用 · 缺件 " + missing + " 件（或几何校验未通过）"; }
+                    else { candidate = null; phase = "截止快照未完整不可应用 · 缺件 " + missing + " 件"; }
                     Send(new { type = "snapshot", current = frozenCurrent, stopped = true });
+                    if (!canApply)
+                    {
+                        Send(new { type = "error", message = "截止快照不可应用：" + LastRejectionReason });
+                    }
                     return;
                 }
                 candidate = completed;
@@ -196,6 +202,53 @@ namespace SparrowStudio.WinForms
                 if (disposePending) Dispose();
                 else if (closePending) { allowClose = true; DialogResult = DialogResult.Cancel; Close(); }
             }
+        }
+        internal static string ExplainFrozenRejection(Job job, Result result, Validation validation)
+        {
+            if (Covered(job, result, validation)) return null;
+            if (result == null) return "当前轮没有可用快照。";
+            if (result.Cancelled) return "当前轮被原生求解器标记为取消，不能作为截止结果。";
+            if (validation == null) return "独立几何校验没有返回结果。";
+            if (validation.Status != "passed")
+            {
+                string[] errors = validation.Errors ?? new string[0];
+                return "独立几何校验失败：" + (errors.Length == 0 ? "未提供错误明细。" : string.Join("；", errors));
+            }
+            if (result.Validation == null || result.Validation.Status != "passed")
+            {
+                string[] errors = result.Validation == null ? new string[0] : result.Validation.Errors ?? new string[0];
+                return "当前轮随附的原生校验未通过：" + (errors.Length == 0 ? "状态不是 passed。" : string.Join("；", errors));
+            }
+            if (result.Unplaced == null) return "当前轮结果没有未放置清单，无法确认需求是否完整。";
+            if (result.Unplaced.Length > 0)
+                return "当前轮仍有未放置零件：" + string.Join("、", result.Unplaced.Select(p => p.PartId + " × " + p.Quantity)) + "。";
+            var sheets = result.Sheets ?? new[] { new SheetResult(job, result) };
+            if (sheets.Length == 0) return "当前轮没有可用板面。";
+            foreach (var sheet in sheets)
+            {
+                if (sheet == null || sheet.Result == null) return "当前轮包含空板结果。";
+                if (sheet.Result.Cancelled) return "当前轮包含被取消的板结果。";
+                if (sheet.Result.Validation == null || sheet.Result.Validation.Status != "passed")
+                {
+                    string[] errors = sheet.Result.Validation == null ? new string[0] : sheet.Result.Validation.Errors ?? new string[0];
+                    return "某块板的独立校验未通过：" + (errors.Length == 0 ? "状态不是 passed。" : string.Join("；", errors));
+                }
+                if (sheet.Job == null || sheet.Job.Parts == null) return "板结果缺少对应的零件需求快照。";
+                if (sheet.Result.Placements == null || sheet.Result.Placements.Length == 0) return "当前轮包含没有放置零件的空板。";
+                if (sheet.Result.Placements.Any(p => p == null || double.IsNaN(p.XMm) || double.IsInfinity(p.XMm) || double.IsNaN(p.YMm) || double.IsInfinity(p.YMm) || double.IsNaN(p.AngleDeg) || double.IsInfinity(p.AngleDeg)))
+                    return "当前轮包含空放置记录或非有限坐标/角度。";
+                var expected = sheet.Job.Parts.SelectMany(p => Enumerable.Range(0, p.Quantity).Select(i => p.Id + "/" + i)).OrderBy(x => x);
+                if (!expected.SequenceEqual(sheet.Result.Placements.Select(p => p.PartId + "/" + p.CopyIndex).OrderBy(x => x)))
+                    return "某块板的零件身份或副本编号与需求不一致（可能重复、遗漏或编号越界）；总件数相同也不能应用。";
+            }
+            var counts = sheets.SelectMany(s => s.Result.Placements).GroupBy(p => p.PartId).ToDictionary(g => g.Key, g => g.Count());
+            foreach (var part in job.Parts)
+            {
+                int actual; counts.TryGetValue(part.Id, out actual);
+                if (actual != part.Quantity) return "零件 " + part.Id + " 数量不一致：需求 " + part.Quantity + "，实际 " + actual + "；总件数可能被其他重复件抵消。";
+            }
+            if (counts.Keys.Any(id => !job.Parts.Any(p => p.Id == id))) return "当前轮包含原任务中不存在的零件。";
+            return "当前轮快照未通过完整性检查，请复制错误信息反馈。";
         }
         internal static bool Complete(Job job, Result result, Validation validation)
         {
@@ -227,12 +280,26 @@ namespace SparrowStudio.WinForms
                 var value = item["result"];
                 if (type == "current-round" && value != null && value.Type != JTokenType.Null)
                 { currentRound = value.ToObject<Result>(JsonSerializer.Create(SparrowJson.CreateSettings())); hasCurrentRound = true; }
-                else if (type == "candidate" && !hasCurrentRound && job.Settings.SheetCount == 1 && value != null && value.Type != JTokenType.Null)
+                else if (type == "candidate" && !hasCurrentRound && !job.Settings.AutoAddSheets && job.Settings.SheetCount == 1 && value != null && value.Type != JTokenType.Null)
                     currentRound = value.ToObject<Result>(JsonSerializer.Create(SparrowJson.CreateSettings()));
             }
             Send(new { type = "snapshot", best = snapshot.Best, current = currentRound, sequence = snapshot.Sequence, eventTypes = (snapshot.Events ?? new JObject[0]).Select(e => (string)e["type"]).ToArray() }); Publish();
         }
         private static Result Clone(Result value) => JsonConvert.DeserializeObject<Result>(JsonConvert.SerializeObject(value, SparrowJson.CreateSettings()), SparrowJson.CreateSettings());
+        private static int MissingCount(Job source, Result value)
+        {
+            var sheets = value.Sheets ?? new[] { new SheetResult(source, value) };
+            var matched = new System.Collections.Generic.Dictionary<string, int>();
+            foreach (var sheet in sheets.Where(s => s != null && s.Job != null && s.Job.Parts != null && s.Result != null && s.Result.Placements != null))
+            {
+                foreach (var part in sheet.Job.Parts)
+                {
+                    int count = sheet.Result.Placements.Where(p => p != null && p.PartId == part.Id && p.CopyIndex >= 0 && p.CopyIndex < part.Quantity).Select(p => p.CopyIndex).Distinct().Count();
+                    int previous; matched.TryGetValue(part.Id, out previous); matched[part.Id] = previous + count;
+                }
+            }
+            return source.Parts.Sum(p => { int count; matched.TryGetValue(p.Id, out count); return Math.Max(0, p.Quantity - count); });
+        }
         private static int PlacedCount(Result value) => value.Sheets != null ? value.Sheets.Sum(s => s?.Result?.Placements?.Length ?? 0) : value.Placements?.Length ?? 0;
         private void StopCurrent()
         {

@@ -28,6 +28,10 @@ try {
         return $ctor.Invoke([object[]]@($list,[double]$w,[double]$h,[double]0,[double]7,[bool]$rotate))
     }
     function Solve($command) {
+        $testJob=$commandType.GetProperty('Job',$flags).GetValue($command,$null)
+        $testJob.Settings.TimeLimitSeconds=2
+        $testJob.Settings.SheetCompressionSeconds=1
+        $testJob.Settings.SheetInsertionWarmStartSeconds=1
         $task = $commandType.GetMethod('SolveAsync',$flags).Invoke($command,[object[]]@([Threading.CancellationToken]::None))
         $task.GetAwaiter().GetResult()
     }
@@ -35,6 +39,7 @@ try {
     $command = Command @($image) 12 32 $true
     $job=$commandType.GetProperty('Job',$flags).GetValue($command,$null)
     Assert ($job.Settings.SheetLengthMm -eq 32 -and $job.Settings.MaterialWidthMm -eq 12) 'Solver sheet axes must follow top-to-bottom layout.'
+    Assert ($job.Settings.AutoAddSheets -and $null -eq $job.Settings.SheetCount -and $null -eq $job.Settings.SheetStocks) 'ImageAssist must request automatic matching sheets without finite inventory.'
     Assert ($job.Parts[0].Outer[0][0] -eq -5 -and $job.Parts[0].Outer[0][1] -eq -15) 'Part contour axes must be transposed.'
     $probe=New-Object SparrowStudio.Core.Placement; $probe.XMm=15; $probe.YMm=5; $probe.AngleDeg=90
     $map=$commandType.GetMethod('MapPlacement',[Reflection.BindingFlags]'Static,NonPublic')
@@ -91,7 +96,7 @@ try {
         $child=New-Object SparrowStudio.Core.Job; $child.Parts=[SparrowStudio.Core.Part[]]@($job.Parts[$i])
         $child.Settings.MaterialWidthMm=11; $child.Settings.SheetLengthMm=11
         $stock=New-Object SparrowStudio.Core.SheetStock; $stock.Id='legacy'; $stock.Name='Sheet'
-        $stock.Quantity=2; $stock.WidthMm=11; $stock.LengthMm=11
+        $stock.Quantity=1; $stock.WidthMm=11; $stock.LengthMm=11
         $child.Settings.SheetStock=$stock
         $p=New-Object SparrowStudio.Core.Placement; $p.PartId=$job.Parts[$i].Id; $p.XMm=5; $p.YMm=5
         $r=New-Object SparrowStudio.Core.Result; $r.Placements=[SparrowStudio.Core.Placement[]]@($p)
