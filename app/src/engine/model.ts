@@ -90,6 +90,8 @@ export type Result = {
   roundIndex?: number;
   /** Zero-based active board in a current-round snapshot. */
   currentSheetIndex?: number;
+  /** Original virtual-domain board index for a split live candidate. */
+  physicalBoardIndex?: number;
   sheets?: { job: Job; result: Result }[];
   unplaced?: { partId: string; quantity: number }[];
 };

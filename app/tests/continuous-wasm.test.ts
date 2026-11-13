@@ -214,7 +214,7 @@ it.each(['pkg', 'pkg-nosimd'])(
       expect(candidates(stage)[0].solution).toEqual(best(cold).solution);
     }
     expect(continuous.events.flatMap(({ message }) => message.type === 'phase' ? [message.phase] : []))
-      .toEqual(['Exploration', 'Exploration', 'Compression']);
+      .toEqual(['Exploration', 'Compression']);
     expect(shortStages.reduce((sum, stage) => sum + stage.request.budget_ms, 0))
       .toBe(continuous.request.budget_ms);
     const ids: number[] = [];

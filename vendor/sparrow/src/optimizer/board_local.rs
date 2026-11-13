@@ -425,7 +425,7 @@ impl<L: SolutionListener> SolutionListener for GlobalListener<'_, L> {
         }
     }
     fn report_phase(&mut self, phase: OptimizationPhase) {
-        self.listener.report_phase(phase);
+        self.listener.report_board_phase(self.board_index, phase);
     }
     fn report_separation_progress(&mut self, mut progress: SeparationProgress) {
         progress.strip_width = self.initial.strip_width();

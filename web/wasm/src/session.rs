@@ -361,7 +361,9 @@ fn compress_until(
     listener: &mut impl SolutionListener,
 ) {
     use sparrow::optimizer::{
-        compress::compression_phase, explore::{exploration_phase, rearrange}, separator::Separator,
+        compress::compression_phase,
+        explore::{exploration_phase, rearrange},
+        separator::Separator,
     };
 
     if instance
@@ -388,7 +390,7 @@ fn compress_until(
     let bound = geometric_lower_bound(&problem);
     let packing_deadline = deadline;
     let packing_exploration_deadline = exploration_deadline;
-    'packing: for exploration in [true, false] {
+    for exploration in [true, false] {
         let phase_deadline = if exploration {
             packing_exploration_deadline.min(packing_deadline)
         } else {
@@ -407,16 +409,7 @@ fn compress_until(
             // Collision geometry and rotations use f32; at this tolerance there is
             // no meaningful room below the proven area/orientation lower bound.
             let gap = best.strip_width() - bound;
-<<<<<<< HEAD
             let at_bound = gap <= best.strip_width().abs().max(1.0) * 2e-6;
-=======
-            if gap <= best.strip_width().abs().max(1.0) * 2e-6 {
-                log::info!(
-                    "[SESSION] compression reached the geometric lower bound; finishing early"
-                );
-                break 'packing;
-            }
->>>>>>> dev
             let max_shrink = (gap / best.strip_width() * 0.5).min(0.5);
             let mut problem = SPProblem::new(instance.clone());
             problem.restore(&best);
@@ -441,7 +434,11 @@ fn compress_until(
                 log::info!("[SESSION] at geometric lower bound; rearranging at fixed width");
                 best = rearrange(&mut separator, &best, listener, &term);
                 listener.report(
-                    if exploration { ReportType::ExplFeas } else { ReportType::CmprFeas },
+                    if exploration {
+                        ReportType::ExplFeas
+                    } else {
+                        ReportType::CmprFeas
+                    },
                     &best,
                     instance,
                 );
@@ -486,14 +483,35 @@ struct SessionListener<'a, F> {
 }
 
 impl<F: FnMut(Value)> SolutionListener for SessionListener<'_, F> {
+    fn report_board_phase(&mut self, board_index: usize, phase: OptimizationPhase) {
+        (self.send)(json!({"type":"sheet-stage", "stage":"local",
+            "boardIndex":board_index, "phase":format!("{phase:?}")}));
+        self.send_phase(phase);
+    }
+
+    fn report_board_evacuation(&mut self) {
+        (self.send)(json!({"type":"sheet-stage", "stage":"evacuation"}));
+    }
+
     fn report_phase(&mut self, phase: OptimizationPhase) {
+        (self.send)(json!({"type":"sheet-stage", "stage":"global", "phase":format!("{phase:?}")}));
+        self.send_phase(phase);
+    }
+
+    fn report(&mut self, report: ReportType, solution: &SPSolution, instance: &SPInstance) {
+        self.send_solution(report, solution, instance);
+    }
+}
+
+impl<F: FnMut(Value)> SessionListener<'_, F> {
+    fn send_phase(&mut self, phase: OptimizationPhase) {
         (self.send)(json!({"type":"phase", "phase":format!("{phase:?}"),
             "workers":match phase { OptimizationPhase::Exploration => self.config.expl_cfg.separator_config.n_workers,
                 OptimizationPhase::Compression => self.config.cmpr_cfg.separator_config.n_workers },
             "initializationMs":self.started.elapsed().as_secs_f64() * 1000.0}));
     }
 
-    fn report(&mut self, report: ReportType, solution: &SPSolution, instance: &SPInstance) {
+    fn send_solution(&mut self, report: ReportType, solution: &SPSolution, instance: &SPInstance) {
         let feasible = matches!(
             report,
             ReportType::ExplFeas | ReportType::CmprFeas | ReportType::Final

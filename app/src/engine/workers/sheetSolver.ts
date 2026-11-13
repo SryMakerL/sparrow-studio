@@ -2,6 +2,7 @@ import type { Job, Result } from '../model';
 import { SOLVER_REVISION } from '../model';
 import type { Candidate, SolverMessage } from './protocol';
 import { SheetWorkerSession } from './sheetSession';
+import { readSheetStage, type SheetStage } from '../sheetStage';
 import { isInitialPlacementFailure, type StripAttempt } from '../sheets';
 
 export function sheetStripSolver(revision: number, threads?: number): StripAttempt {
@@ -13,9 +14,18 @@ export function sheetStripSolver(revision: number, threads?: number): StripAttem
     attemptBudgetMs?: number,
     initialPlacement?: Result,
     onStarted?: (started: boolean) => void,
+    onStage?: (stage: SheetStage) => void,
   ) =>
     session
-      ? session.attempt(job, signal, onCandidate, attemptBudgetMs, initialPlacement, onStarted)
+      ? session.attempt(
+          job,
+          signal,
+          onCandidate,
+          attemptBudgetMs,
+          initialPlacement,
+          onStarted,
+          onStage,
+        )
       : // Sparrow's strip inset requires positive width after clearance; retain the
         // geometry fallback for every stock kind until narrow-stock gap semantics exist.
         job.settings.materialWidthMm <= job.settings.clearanceMm
@@ -62,6 +72,15 @@ export function sheetStripSolver(revision: number, threads?: number): StripAttem
             worker.onmessage = ({ data }: MessageEvent<SolverMessage>) => {
               if (done || signal?.aborted) return;
               if (data.runId !== 1 || data.documentRevision !== revision) return;
+              if (data.type === 'sheet-stage') {
+                const stage = readSheetStage(data);
+                if (stage) onStage?.(stage);
+              }
+              if (
+                data.type === 'phase' &&
+                (data.phase === 'Exploration' || data.phase === 'Compression')
+              )
+                onStage?.({ stage: 'global', phase: data.phase });
               if (data.type === 'candidate') {
                 const result = fromCandidate(job, data, seed);
                 if (!best || result.usedLengthMm < best.usedLengthMm) best = result;

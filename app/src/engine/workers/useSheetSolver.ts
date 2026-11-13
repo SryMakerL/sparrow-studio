@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Job, Result } from '../model';
 import { solveSheets, type SheetProgress } from '../sheets';
+import type { SheetStage } from '../sheetStage';
 import { geometryTask } from './geometryTask';
 import { sheetStripSolver } from './sheetSolver';
 import type { Diagnostics, LiveFrame, RunState } from './useSolver';
@@ -25,12 +26,10 @@ export function useSheetSolver() {
     sheetIndex: number;
     phase: 'Insertion' | 'Compression';
     insertionFailures: number;
-<<<<<<< HEAD
     compressionStatus?: SheetProgress['compressionStatus'];
     sheetEndReason?: SheetProgress['sheetEndReason'];
-=======
     selectedBoards?: number;
->>>>>>> dev
+    stage?: SheetStage;
   }>();
   const [state, setState] = useState<RunState>('Ready');
   const [error, setError] = useState('');
@@ -99,17 +98,19 @@ export function useSheetSolver() {
         if (reply.type !== 'validated') throw Error('Unexpected validation reply.');
         return reply.validation;
       },
-      onProgress: (progress) => {
-<<<<<<< HEAD
+      onProgress: (progress: SheetProgress & { stage?: SheetStage }) => {
         if (active.current !== controller || controller.signal.aborted) return;
         setSheetProgress({
+          roundIndex: progress.roundIndex,
           sheetIndex: progress.sheetIndex,
           phase: progress.phase,
           insertionFailures: progress.insertionFailures,
+          selectedBoards: progress.selectedBoards,
+          stage: progress.stage,
           compressionStatus: progress.compressionStatus,
           sheetEndReason: progress.sheetEndReason,
         });
-        const traceKey = `${progress.sheetIndex}:${progress.phase}:${progress.insertionFailures}`;
+        const traceKey = `${progress.roundIndex}:${progress.sheetIndex}:${progress.phase}:${progress.insertionFailures}`;
         if (traceKey !== lastPhaseTrace.current) {
           lastPhaseTrace.current = traceKey;
           setPhaseTrace((trace) => [
@@ -131,16 +132,6 @@ export function useSheetSolver() {
             },
           ]);
         }
-=======
-        if (active.current === controller && !controller.signal.aborted)
-          setSheetProgress({
-            roundIndex: progress.roundIndex,
-            sheetIndex: progress.sheetIndex,
-            phase: progress.phase,
-            insertionFailures: progress.insertionFailures,
-            selectedBoards: progress.selectedBoards,
-          });
->>>>>>> dev
       },
       onCurrentRound: (next) => {
         if (active.current === controller && !controller.signal.aborted) setCurrentResult(next);

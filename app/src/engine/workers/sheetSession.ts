@@ -3,6 +3,7 @@ import { SOLVER_REVISION, POLICY } from '../model';
 import { bounds } from '../geometry/normalize';
 import { transform } from '../geometry/validate';
 import type { Candidate } from './protocol';
+import { readSheetStage, type SheetStage } from '../sheetStage';
 
 const key = (result: Result) =>
   JSON.stringify([result.seed, result.usedLengthMm, result.placements]);
@@ -48,6 +49,9 @@ type SessionMessage = {
   attemptId?: number;
   snapshotId?: number;
   message?: string;
+  stage?: unknown;
+  boardIndex?: unknown;
+  phase?: unknown;
 } & Partial<Omit<Candidate, 'type'>>;
 
 type Pending = {
@@ -57,6 +61,8 @@ type Pending = {
   initial?: Result;
   best?: Result;
   offer?: (result: Result) => void;
+  onStage?: (stage: SheetStage) => void;
+  signal?: AbortSignal;
   finish: (error?: string) => void;
 };
 
@@ -152,7 +158,18 @@ export class SheetWorkerSession {
       }
       const pending = this.pending;
       if (!pending || data.attemptId !== pending.id) return;
-      if (data.type === 'candidate' && data.solution && data.snapshotId !== undefined) {
+      if (data.type === 'sheet-stage') {
+        if (pending.signal?.aborted) return;
+        const stage = readSheetStage(data);
+        if (stage) pending.onStage?.(stage);
+        return;
+      }
+      if (
+        data.type === 'candidate' &&
+        !pending.signal?.aborted &&
+        data.solution &&
+        data.snapshotId !== undefined
+      ) {
         const copies = new Map<string, number>();
         const result: Result = {
           documentRevision: this.revision,
@@ -218,6 +235,7 @@ export class SheetWorkerSession {
     budgetMs = 2500,
     initial?: Result,
     onStarted?: (started: boolean) => void,
+    onStage?: (stage: SheetStage) => void,
   ): Promise<Result | undefined> {
     if (signal?.aborted) return;
     await this.idle;
@@ -292,7 +310,7 @@ export class SheetWorkerSession {
             finish();
           }, remaining + 100)
         : undefined;
-      this.pending = { id, seed, job, initial, offer, finish };
+      this.pending = { id, seed, job, initial, offer, onStage, signal, finish };
       signal?.addEventListener('abort', abort, { once: true });
       const quantities = new Map(job.parts.map((part) => [part.id, part.quantity]));
       onStarted?.(true);

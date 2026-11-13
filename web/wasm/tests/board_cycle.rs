@@ -150,12 +150,15 @@ fn final_occupied_board_is_not_locally_compacted() {
         improved: bool,
     }
     impl SolutionListener for LocalReports<'_> {
-        fn report_phase(&mut self, _: OptimizationPhase) {
+        fn report_board_phase(&mut self, board_index: usize, _: OptimizationPhase) {
+            assert_eq!(
+                board_index, 0,
+                "only the first occupied board is locally compacted"
+            );
             self.phases += 1;
-            // Outer local phase, native exploration, native compression, then global phase.
-            if self.phases >= 4 {
-                self.stop.set(true);
-            }
+        }
+        fn report_phase(&mut self, _: OptimizationPhase) {
+            self.stop.set(true);
         }
         fn report(&mut self, report: ReportType, solution: &SPSolution, instance: &SPInstance) {
             if !matches!(
@@ -212,9 +215,9 @@ fn final_occupied_board_is_not_locally_compacted() {
         reports.improved,
         "earlier board must still receive local Sparrow search"
     );
-    assert!(
-        (3..=4).contains(&reports.phases),
-        "one local board emits native phases; global setup may exhaust its short slice"
+    assert_eq!(
+        reports.phases, 3,
+        "local preparation, exploration and compression belong to board 1"
     );
     for (key, before) in &initial.layout_snapshot.placed_items {
         if before.shape.bbox.x_min >= 31.0 {
@@ -302,6 +305,9 @@ fn automatic_mode_without_combination_deadline_obeys_rounds_and_stop() {
     }
     impl SolutionListener for StopAfterPhases {
         fn report(&mut self, _: ReportType, _: &SPSolution, _: &SPInstance) {}
+        fn report_board_evacuation(&mut self) {
+            self.report_phase(OptimizationPhase::Compression);
+        }
         fn report_phase(&mut self, _: OptimizationPhase) {
             self.count += 1;
             if self.count >= 12 {

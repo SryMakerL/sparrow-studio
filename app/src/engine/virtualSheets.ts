@@ -209,6 +209,7 @@ export function splitVirtualResult(
         result: {
           ...candidate,
           documentRevision: revision,
+          physicalBoardIndex: index,
           placements,
           usedLengthMm,
           validation: { ...candidate.validation, status: 'pending' as const },

@@ -6,6 +6,12 @@ pub trait SolutionListener {
 
     fn report_phase(&mut self, _phase: OptimizationPhase) {}
 
+    fn report_board_phase(&mut self, _board_index: usize, phase: OptimizationPhase) {
+        self.report_phase(phase);
+    }
+
+    fn report_board_evacuation(&mut self) {}
+
     fn report_separation_progress(&mut self, _progress: SeparationProgress) {}
 
     fn report_separation_result(&mut self, _result: SeparationResult) {}

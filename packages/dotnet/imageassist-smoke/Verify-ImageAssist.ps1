@@ -33,6 +33,14 @@ try {
     }
     $image = Image 30 10 100 200 0
     $command = Command @($image) 12 32 $true
+    $job=$commandType.GetProperty('Job',$flags).GetValue($command,$null)
+    Assert ($job.Settings.SheetLengthMm -eq 32 -and $job.Settings.MaterialWidthMm -eq 12) 'Solver sheet axes must follow top-to-bottom layout.'
+    Assert ($job.Parts[0].Outer[0][0] -eq -5 -and $job.Parts[0].Outer[0][1] -eq -15) 'Part contour axes must be transposed.'
+    $probe=New-Object SparrowStudio.Core.Placement; $probe.XMm=15; $probe.YMm=5; $probe.AngleDeg=90
+    $map=$commandType.GetMethod('MapPlacement',[Reflection.BindingFlags]'Static,NonPublic')
+    $mapped=$map.Invoke($null,[object[]]@($probe.PSObject.BaseObject,[double]20,[int]1,[double]32,[double]7))
+    $mappedType=$mapped.GetType()
+    Assert ($mappedType.GetField('X',$flags).GetValue($mapped) -eq 5 -and $mappedType.GetField('Y',$flags).GetValue($mapped) -eq 54 -and $mappedType.GetField('Angle',$flags).GetValue($mapped) -eq -70) 'Vertical placement axes, rotation or board offset incorrect.'
     Solve $command
     Assert ($image.Position.x -eq 100 -and $image.Position.y -eq 200) 'Solve mutated canvas before commit.'
     $command.Execute()
@@ -44,6 +52,17 @@ try {
     $command.Execute()
     Assert ($image.Position.x -eq $x -and $image.Position.y -eq $y -and $image.RotateAngle -eq $angle -and $image.isMirror) 'Redo or metadata preservation failed.'
     Write-Output 'PASS actual ImageAssist command: native solve, atomic commit, forced rotation, undo/redo, metadata'
+    $verticalA=Image 10 6 100 200 0; $verticalB=Image 10 6 300 400 0
+    $vertical=Command @($verticalA,$verticalB) 12 20 $false
+    Solve $vertical; $vertical.Execute()
+    $ordered=@($verticalA,$verticalB) | Sort-Object { $_.Bounding.Top }
+    Assert ($ordered[0].Bounding.Top -ge -0.01 -and $ordered[1].Bounding.Bottom -le 20.01) 'Vertical layout should fit on one board.'
+    Assert ($ordered[1].Bounding.Top -ge $ordered[0].Bounding.Bottom-0.01) 'Unrotated parts must advance from top to bottom.'
+    Assert ($verticalA.Bounding.Left -ge -0.01 -and $verticalA.Bounding.Right -le 12.01 -and $verticalB.Bounding.Left -ge -0.01 -and $verticalB.Bounding.Right -le 12.01) 'Vertical layout exceeds canvas width.'
+    Assert ($verticalA.RotateAngle -eq 0 -and $verticalB.RotateAngle -eq 0) 'Vertical layout must preserve disabled rotation.'
+    $vertical.Undo()
+    Assert ($verticalA.Position.x -eq 100 -and $verticalA.Position.y -eq 200 -and $verticalB.Position.x -eq 300 -and $verticalB.Position.y -eq 400) 'Vertical layout undo failed.'
+    Write-Output 'PASS actual ImageAssist command: transposed axes and top-to-bottom packing without rotation'
     $a=Image 10 10 100 200 0; $b=Image 10 10 300 400 0
     $command=Command @($a,$b) 11 11 $false
     Solve $command; $command.Execute()

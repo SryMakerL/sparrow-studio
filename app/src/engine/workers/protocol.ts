@@ -3,6 +3,8 @@ import type { Job, Result, Validation } from '../model';
 import type { ImportReview } from '../import/sparrow';
 import type { ExportBundle } from '../export/svg';
 import type { LiveGeometry } from '../geometry/live';
+import type { SheetStage } from '../sheetStage';
+export type { SheetStage } from '../sheetStage';
 export type Identity = { runId: number; documentRevision: number };
 export type Start = Identity & { type: 'start'; document: Job; seed: string; threads?: number; initialPlacement?: Result; control?: SharedArrayBuffer };
 export type SessionInit = Identity & { type: 'session-init'; document: Job; threads?: number; control?: SharedArrayBuffer };
@@ -16,6 +18,7 @@ export type SessionCancel = { type: 'session-cancel'; attemptId: number };
 export type Placement = { item_id: number; transformation: { rotation: number; translation: [number, number] } };
 export type SolverMessage = Identity & { attemptId?: number; snapshotId?: number } & (
   | { type: 'session-ready' }
+  | ({ type: 'sheet-stage' } & SheetStage)
   | { type: 'attempt-error'; attemptId: number; message: string }
   | { type: 'ready'; threads: number; solverBinary: SolverBinary; simd: boolean; canSkip: boolean; fallbackReason?: string }
   | { type: 'phase'; phase: string; workers: number; initializationMs: number }

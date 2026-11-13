@@ -1,4 +1,5 @@
 import { jobStocks, stockArea } from './stock';
+import type { SheetStage } from './sheetStage';
 import {
   SOLVER_REVISION,
   type Job,
@@ -35,6 +36,7 @@ export type StripAttempt = ((
   attemptBudgetMs?: number,
   initialPlacement?: Result,
   onStarted?: (started: boolean) => void,
+  onStage?: (stage: SheetStage) => void,
 ) => Promise<Result | undefined>) & {
   beginSheet?: (catalog: Job, signal?: AbortSignal) => void | Promise<void>;
   endSheet?: () => void;
@@ -47,7 +49,8 @@ export type SheetProgress = {
   lastImprovementAt: number;
   phase: 'Insertion' | 'Compression';
   insertionFailures: number;
-<<<<<<< HEAD
+  selectedBoards?: number;
+  stage?: SheetStage;
   compressionStatus?: 'running' | 'skipped-budget';
   sheetEndReason?:
     | 'failure-limit'
@@ -55,9 +58,6 @@ export type SheetProgress = {
     | 'all-parts-placed'
     | 'initial-placement-failed'
     | 'stopped';
-=======
-  selectedBoards?: number;
->>>>>>> dev
 };
 type SheetOptions = {
   onProgress?: (progress: SheetProgress) => void;
@@ -160,44 +160,15 @@ export async function solveSheets(
       const different = left.findIndex((value, index) => value !== right[index]);
       return different >= 0 && left[different] < right[different];
     };
-<<<<<<< HEAD
-    let stagnant = 0;
-    let roundIndex = 0;
-    let reason: SheetOutcome['reason'] = 'Unplaceable';
-    while (!expired()) {
-      if (deadline - performance.now() < 100 * Math.max(1, job.settings.sheetCount ?? 1)) {
-        await untilAbort(new Promise<void>(() => {}), controller.signal);
-        break;
-      }
-      const previous = best;
-      const round = await solveSheetRound(
-        job,
-        Object.assign(
-          async (
-            child: Job,
-            signal?: AbortSignal,
-            onCandidate?: (result: Result) => void,
-            attemptBudgetMs?: number,
-            initialPlacement?: Result,
-            onStarted?: (started: boolean) => void,
-          ) => {
-            if (expired()) return undefined;
-            return untilAbort(
-              solve(child, signal, onCandidate, attemptBudgetMs, initialPlacement, onStarted),
-              signal,
-            );
-          },
-          {
-            beginSheet: solve.beginSheet,
-            endSheet: solve.endSheet,
-            acceptCandidate: solve.acceptCandidate,
-            continueSheet: solve.continueSheet,
-          },
-=======
     let roundIndex = 0,
       failures = 0,
       lastImprovementAt = started;
-    const progress = (phase: SheetProgress['phase'], selectedBoards: number) =>
+    const progress = (
+      phase: SheetProgress['phase'],
+      selectedBoards: number,
+      compressionStatus?: SheetProgress['compressionStatus'],
+      stage?: SheetStage,
+    ) =>
       options.onProgress?.({
         roundIndex,
         sheetIndex: 0,
@@ -205,6 +176,8 @@ export async function solveSheets(
         phase,
         insertionFailures: failures,
         selectedBoards,
+        ...(compressionStatus ? { compressionStatus } : {}),
+        ...(stage ? { stage } : {}),
       });
     const publish = (result: Result) => {
       result = { ...result, roundIndex, elapsedSeconds: (performance.now() - started) / 1000 };
@@ -218,7 +191,6 @@ export async function solveSheets(
       const validation = await untilAbort(
         Promise.resolve(
           options.validate ? options.validate(job, result, signal) : validate(job, result),
->>>>>>> dev
         ),
         signal,
       );
@@ -264,7 +236,6 @@ export async function solveSheets(
     const attempt = async (selected: SheetStock[], parts: Part[]): Promise<Result | undefined> => {
       if (stopped() || !selected.length || !parts.some((part) => part.quantity > 0)) return;
       const virtual = stitchBoards(job, selected, parts);
-      const attemptStarted = performance.now();
       const budget = deadline - performance.now();
       if (budget < 50) return;
       const attemptController = new AbortController();
@@ -275,6 +246,15 @@ export async function solveSheets(
         current: Result | undefined,
         raw: Result | undefined;
       let latest: Result | undefined, checking: Promise<void> | undefined, validationError: unknown;
+      let stepSequence = 0;
+      let phase: SheetProgress['phase'] = 'Insertion';
+      let stage: SheetStage | undefined;
+      let compressionStatus: SheetProgress['compressionStatus'];
+      const onStage = (step: number) => (next: SheetStage) => {
+        if (!active || attemptController.signal.aborted || step !== stepSequence) return;
+        stage = next;
+        progress(phase, selected.length, compressionStatus, stage);
+      };
       const drain = async () => {
         while (latest && active && !attemptController.signal.aborted) {
           const candidate = latest;
@@ -319,32 +299,71 @@ export async function solveSheets(
         if (attemptController.signal.aborted) return;
         const initial = warmStart(virtual);
         const search = async (warm?: Result) => {
-          const result = await untilAbort(
-            solve(
-              virtual.job,
-              attemptController.signal,
-              offer,
-              Math.max(0, budget - (performance.now() - attemptStarted)),
-              warm,
-            ),
-            attemptController.signal,
-          );
-          if (result) offer(result);
-          await flush();
-        };
-        await search(initial);
-        if (!current && initial && !attemptController.signal.aborted) await search();
-        if (current && raw && !attemptController.signal.aborted) {
-          progress('Compression', selected.length);
-          const remaining = Math.max(0, budget - (performance.now() - attemptStarted));
-          if (remaining > 100) {
+          const step = ++stepSequence;
+          const previousStage = stage;
+          phase = 'Insertion';
+          stage = undefined;
+          compressionStatus = undefined;
+          if (previousStage) progress(phase, selected.length);
+          let initialFailed = false;
+          try {
             const result = await untilAbort(
-              solve(virtual.job, attemptController.signal, offer, remaining, raw),
+              solve(
+                virtual.job,
+                attemptController.signal,
+                offer,
+                Math.max(0, deadline - performance.now()),
+                warm,
+                undefined,
+                onStage(step),
+              ),
               attemptController.signal,
             );
             if (result) offer(result);
-            await flush();
+          } catch (error) {
+            if (!isInitialPlacementFailure(error)) throw error;
+            initialFailed = true;
+          } finally {
+            stepSequence++;
           }
+          await flush();
+          return initialFailed;
+        };
+        const initialFailed = await search(initial);
+        if (initial && (initialFailed || !current) && !attemptController.signal.aborted)
+          await search();
+        if (current && raw && !attemptController.signal.aborted) {
+          phase = 'Compression';
+          stage = undefined;
+          compressionStatus = undefined;
+          progress(phase, selected.length);
+          const remaining = Math.max(0, deadline - performance.now());
+          if (remaining > 100) {
+            const step = ++stepSequence;
+            try {
+              const result = await untilAbort(
+                solve(
+                  virtual.job,
+                  attemptController.signal,
+                  offer,
+                  remaining,
+                  raw,
+                  (started) => {
+                    if (!active || attemptController.signal.aborted || step !== stepSequence)
+                      return;
+                    compressionStatus = started ? 'running' : 'skipped-budget';
+                    progress(phase, selected.length, compressionStatus, stage);
+                  },
+                  onStage(step),
+                ),
+                attemptController.signal,
+              );
+              if (result) offer(result);
+            } finally {
+              stepSequence++;
+            }
+            await flush();
+          } else progress(phase, selected.length, 'skipped-budget');
         }
         return current;
       } catch (error) {
@@ -385,8 +404,7 @@ export async function solveSheets(
         queue.push({ boards, parts: demand });
     };
     enqueue(selected);
-    const limit = Math.min(32, Math.max(8, stocks.length * 2 + 4));
-    while (queue.length && !stopped() && roundIndex < limit) {
+    while (queue.length && !stopped()) {
       const next = queue.shift()!;
       selected = next.boards;
       parts = next.parts;
@@ -517,494 +535,3 @@ export async function solveSheets(
     options.signal?.removeEventListener('abort', stop);
   }
 }
-<<<<<<< HEAD
-
-/** Bounded greedy bin packing. Every rejected combination is solved again, never clipped. */
-async function solveSheetRound(
-  input: Job,
-  solve: StripAttempt,
-  options: SheetOptions & {
-    deadline?: number;
-    roundIndex?: number;
-    pendingIds?: string[];
-  } = {},
-): Promise<SheetOutcome> {
-  const signal = options.signal;
-  const stopped = () => {
-    if (options.deadline !== undefined && performance.now() >= options.deadline) return true;
-    return signal?.aborted ?? false;
-  };
-  const job = input;
-  const stocks = jobStocks(job)
-    .map((stock, index) => ({ stock, index }))
-    .sort((a, b) => b.stock.priority - a.stock.priority || a.index - b.index)
-    .flatMap(({ stock }) => Array.from({ length: stock.quantity }, () => stock));
-  let stock = stocks[0];
-  let length = stock.lengthMm;
-  const count = stocks.length;
-  const compressionMs = (job.settings.sheetCompressionSeconds ?? 10) * 1000;
-  const insertionWarmStartMs = (job.settings.sheetInsertionWarmStartSeconds ?? 10) * 1000;
-  const insertionFailureLimit = job.settings.sheetInsertionFailures ?? 3;
-  const started = performance.now(),
-    sheets: SheetEntry[] = [];
-  const remaining = new Map(job.parts.map((p) => [p.id, p.quantity]));
-  const rejected = new Set<string>();
-  const successful = new Map<string, SheetEntry>();
-  const areas = new Map(job.parts.map((p) => [p.id, Math.abs(ringArea(p.outer))]));
-  let capacity = stockArea(stock);
-  let replacingIndex: number | undefined;
-  const aggregate = (current?: SheetEntry): Result => {
-    const entries = [...sheets];
-    if (current) {
-      if (replacingIndex === undefined) entries.push(current);
-      else entries[replacingIndex] = current;
-    }
-    const pending = new Map(remaining);
-    if (replacingIndex === undefined)
-      current?.job.parts.forEach((p) => pending.set(p.id, pending.get(p.id)! - p.quantity));
-    return {
-      documentRevision: options.revision ?? 0,
-      solverRevision: SOLVER_REVISION,
-      roundIndex: options.roundIndex ?? 0,
-      seed: entries[0]?.result.seed ?? '',
-      elapsedSeconds: (performance.now() - started) / 1000,
-      usedLengthMm: entries.reduce((sum, s) => sum + s.result.usedLengthMm, 0),
-      placements: [],
-      sheets: entries,
-      unplaced: job.parts
-        .filter((p) => pending.get(p.id)! > 0)
-        .map((p) => ({ partId: p.id, quantity: pending.get(p.id)! })),
-      validation: {
-        status: 'passed',
-        overlapAreaMm2: 0,
-        maxBoundaryViolationMm: 0,
-        minClearanceMm: null,
-        errors: [],
-      },
-    };
-  };
-  let currentSheetIndex = 0;
-  const publishCurrent = (result = aggregate()) => {
-    if (!stopped())
-      options.onCurrentRound?.({ ...result, currentSheetIndex }, options.roundIndex ?? 0);
-  };
-  publishCurrent();
-  let observe: ((entry: SheetEntry) => boolean) | undefined;
-  let observeWorking: ((entry: SheetEntry) => boolean) | undefined;
-  const attempt = async (
-    ids: string[],
-    mode: 'search' | 'compress' = 'search',
-    initialPlacement?: Result,
-<<<<<<< HEAD
-    onStarted?: (started: boolean) => void,
-=======
-    insertion = false,
-    compressionBudgetMs = compressionMs,
->>>>>>> dev
-  ): Promise<SheetEntry | undefined> => {
-    if (stopped()) return;
-    const remainingMs = (options.deadline ?? Infinity) - performance.now();
-    const adding = !!initialPlacement && ids.length > initialPlacement.placements.length;
-    const budget = Math.max(
-      0,
-      Math.min(
-        mode === 'compress'
-          ? compressionBudgetMs
-          : insertion || adding
-            ? insertionWarmStartMs
-            : 2500,
-        remainingMs,
-      ),
-    );
-    const quantities = new Map<string, number>();
-    ids.forEach((id) => quantities.set(id, (quantities.get(id) ?? 0) + 1));
-    const key =
-      stockGeometryKey(stock) +
-      JSON.stringify([...quantities].sort(([a], [b]) => a.localeCompare(b)));
-    const cached = successful.get(key);
-    if (cached && mode === 'search') return structuredClone(cached);
-    if (budget < 50) {
-      if (remainingMs < 50 && Number.isFinite(remainingMs))
-        await untilAbort(
-          new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, remainingMs))),
-          signal,
-        );
-      return;
-    }
-    const solverController = new AbortController();
-    const attemptController = new AbortController();
-    const stopSolver = () => solverController.abort();
-    const stopAttempt = () => {
-      attemptController.abort();
-      stopSolver();
-    };
-    signal?.addEventListener('abort', stopAttempt, { once: true });
-    const attemptDeadline = performance.now() + budget;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const checkDeadline = () => {
-      const wait = attemptDeadline - performance.now();
-      if (wait <= 0) stopAttempt();
-      else if (Number.isFinite(wait)) timer = setTimeout(checkDeadline, wait);
-    };
-    checkDeadline();
-    const attemptStopped = () => stopped() || attemptController.signal.aborted;
-    const { sheetCount: _, sheetStocks: _stocks, ...settings } = job.settings;
-    const child: Job = {
-      ...job,
-      settings: {
-        ...settings,
-        sheetStock: structuredClone(stock),
-        sheetLengthMm: stock.lengthMm,
-        materialWidthMm: stock.widthMm,
-        timeLimitSeconds: 10,
-      },
-      parts: job.parts
-        .filter((p) => quantities.has(p.id))
-        .map((p) => ({ ...p, quantity: quantities.get(p.id)! })),
-    };
-    let verified: SheetEntry | undefined;
-    let latest: Result | undefined;
-    let submitted: Result | undefined;
-    let checking: Promise<void> | undefined;
-    let failure: unknown;
-    let active = true;
-    const drain = async () => {
-      while (latest && active && !attemptStopped()) {
-        const result = latest;
-        latest = undefined;
-        const validation = options.validate
-          ? await options.validate(child, result, attemptController.signal)
-          : validate(child, result);
-        if (!active || attemptStopped()) return;
-        if (validation.status !== 'passed') continue;
-        if (
-          verified &&
-          (verified.result.usedLengthMm < result.usedLengthMm ||
-            (mode === 'search' && verified.result.usedLengthMm === result.usedLengthMm))
-        )
-          continue;
-        verified = { job: child, result: { ...result, validation } };
-        successful.set(key, structuredClone(verified));
-        if (observe?.(verified)) {
-          solve.acceptCandidate?.(verified.result);
-          const snapshot = aggregate(verified);
-          publishCurrent(snapshot);
-          options.onSheet?.(snapshot);
-        } else if (mode === 'compress' && observeWorking?.(verified)) {
-          solve.acceptCandidate?.(verified.result);
-        }
-        if (mode === 'search') stopSolver();
-      }
-    };
-    const pump = () => {
-      if (checking) return;
-      checking = drain()
-        .catch((error) => {
-          failure = error;
-        })
-        .finally(() => {
-          checking = undefined;
-          if (latest && active && !attemptStopped()) pump();
-        });
-    };
-    const offer = (result: Result) => {
-      if (
-        !active ||
-        attemptStopped() ||
-        result === submitted ||
-        result.sheets ||
-        result.unplaced ||
-        result.usedLengthMm > length + POLICY.linearMm
-      )
-        return;
-      submitted = result;
-      latest = structuredClone(result);
-      pump();
-    };
-    let startReported = false;
-    try {
-      const result = await untilAbort(
-        solve(child, solverController.signal, offer, budget, initialPlacement, (started) => {
-          startReported = true;
-          if (mode === 'compress') onStarted?.(started);
-        }),
-        solverController.signal,
-      );
-      if (mode === 'compress' && !startReported) onStarted?.(false);
-      if (result) offer(result);
-      while (checking && !attemptStopped()) await untilAbort(checking, attemptController.signal);
-      if (failure) throw failure;
-      return verified;
-    } catch (error) {
-      if (isInitialPlacementFailure(error)) return verified;
-      throw error;
-    } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', stopAttempt);
-      active = false;
-      stopAttempt();
-      latest = undefined;
-    }
-  };
-  const ordered = [...job.parts].sort((a, b) => areas.get(b.id)! - areas.get(a.id)!);
-  const offset = (options.roundIndex ?? 0) % ordered.length;
-  ordered.push(...ordered.splice(0, offset));
-  if ((options.roundIndex ?? 0) > 0 && options.pendingIds?.length) {
-    const pending = new Set(options.pendingIds);
-    ordered.sort((a, b) => Number(pending.has(b.id)) - Number(pending.has(a.id)));
-  }
-  ordered.sort((a, b) => b.priority - a.priority);
-  const priorityLevels = [...new Set(job.parts.map((p) => p.priority))].sort((a, b) => b - a);
-  const failedStocks = new Map<string, number>();
-  for (let sheetIndex = 0; sheetIndex < count && !stopped(); sheetIndex++) {
-    stock = stocks[sheetIndex];
-    if ((failedStocks.get(stock.id) ?? 0) >= 2) continue;
-    length = stock.lengthMm;
-    capacity = stockArea(stock);
-    currentSheetIndex = sheetIndex;
-    solve.endSheet?.();
-    await solve.beginSheet?.(
-      {
-        ...job,
-        settings: {
-          ...job.settings,
-          sheetStock: structuredClone(stock),
-          sheetLengthMm: stock.lengthMm,
-          materialWidthMm: stock.widthMm,
-        },
-      },
-      signal,
-    );
-    if (stopped()) break;
-    if (sheetIndex > 0) publishCurrent();
-    let lastImprovementAt = performance.now();
-    let best: SheetEntry | undefined;
-    let working: SheetEntry | undefined;
-    let selected: string[] = [];
-    let insertionFailures = 0;
-    let sheetEndReason: SheetProgress['sheetEndReason'];
-    let compressionStatus: SheetProgress['compressionStatus'];
-    let insertionPass = 0;
-    let previousFailed = new Set<string>();
-    let phase: SheetProgress['phase'] = 'Insertion';
-    const progress = () =>
-      options.onProgress?.({
-        roundIndex: options.roundIndex ?? 0,
-        sheetIndex,
-        lastImprovementAt,
-        phase,
-        insertionFailures,
-        compressionStatus,
-        sheetEndReason,
-      });
-    progress();
-    observe = (entry) => {
-      const ids = entry.job.parts.flatMap((p) => Array<string>(p.quantity).fill(p.id));
-      const priorityCounts = (parts: Job['parts']) =>
-        priorityLevels.map((priority) =>
-          parts.reduce((sum, p) => sum + (p.priority === priority ? p.quantity : 0), 0),
-        );
-      const counts = priorityCounts(entry.job.parts);
-      const bestCounts = best ? priorityCounts(best.job.parts) : counts.map(() => 0);
-      const different = counts.findIndex((value, i) => value !== bestCounts[i]);
-      if (
-        !best ||
-        (different >= 0 && counts[different] > bestCounts[different]) ||
-        (different < 0 && entry.result.usedLengthMm < best.result.usedLengthMm)
-      ) {
-        best = entry;
-        working = entry;
-        selected = ids;
-        lastImprovementAt = performance.now();
-        progress();
-        return true;
-      }
-      return false;
-    };
-    observeWorking = (entry) => {
-      if (
-        !working ||
-        entry.result.usedLengthMm > working.result.usedLengthMm ||
-        JSON.stringify(entry.result.placements) === JSON.stringify(working.result.placements)
-      )
-        return false;
-      working = entry;
-      return true;
-    };
-    const pool = ordered.flatMap((p) => Array.from({ length: remaining.get(p.id)! }, () => p.id));
-    if (!pool.length) {
-      sheetEndReason = 'no-remaining-parts';
-      progress();
-      break;
-    }
-    let initialPass = true;
-    let finalCompressionDeadline: number | undefined;
-    while (!stopped()) {
-      if (!initialPass && best) {
-        if (selected.length === pool.length)
-          finalCompressionDeadline ??= Math.min(
-            performance.now() + compressionMs * insertionFailureLimit,
-            options.deadline ?? Infinity,
-          );
-        const remainingCompressionMs =
-          finalCompressionDeadline === undefined
-            ? compressionMs
-            : finalCompressionDeadline - performance.now();
-        if (remainingCompressionMs <= 0) break;
-        phase = 'Compression';
-        compressionStatus = undefined;
-        progress();
-        successful.clear();
-<<<<<<< HEAD
-        await attempt([...selected], 'compress', working!.result, (started) => {
-          compressionStatus = started ? 'running' : 'skipped-budget';
-          progress();
-        });
-        await attempt([...selected], 'compress', working!.result);
-        if (stopped()) break;
-        compressionStatus = undefined;
-        if (selected.length === pool.length) {
-          if (sheets.length > 0) {
-            sheetEndReason = 'all-parts-placed';
-            break;
-          }
-=======
-        await attempt(
-          [...selected],
-          'compress',
-          working!.result,
-          false,
-          Math.min(compressionMs, remainingCompressionMs),
-        );
-        if (stopped()) break;
-        if (finalCompressionDeadline !== undefined) {
-          if (performance.now() >= finalCompressionDeadline) break;
->>>>>>> dev
-          await untilAbort(
-            new Promise<void>((resolve) =>
-              setTimeout(
-                resolve,
-                Math.min(100, Math.max(0, finalCompressionDeadline! - performance.now())),
-              ),
-            ),
-            signal,
-          );
-          continue;
-        }
-      }
-      phase = 'Insertion';
-      progress();
-      const beforeInsertion = selected.length;
-      successful.clear();
-      rejected.clear();
-      if (!best) {
-        let area = 0;
-        let trialIds = pool.filter((id) => {
-          const next = areas.get(id)!;
-          if (area + next > capacity + POLICY.overlapMm2) return false;
-          area += next;
-          return true;
-        });
-        if (!trialIds.length) trialIds = [pool[0]];
-        let initial: SheetEntry | undefined;
-        while (trialIds.length && !stopped()) {
-          initial = await attempt(trialIds);
-          if (initial) break;
-          if (trialIds.length === 1) {
-            rejected.add(trialIds[0]);
-            trialIds = pool.filter((id) => !rejected.has(id)).slice(0, 1);
-          } else trialIds = trialIds.slice(0, Math.max(1, Math.floor(trialIds.length / 2)));
-        }
-      }
-      if (best) {
-        const available = [...pool];
-        selected.forEach((id) => available.splice(available.indexOf(id), 1));
-        let filledArea = selected.reduce((sum, id) => sum + areas.get(id)!, 0);
-        const availableIds = [...new Set(available)];
-        const candidates = priorityLevels.flatMap((priority) => {
-          const group = availableIds.filter(
-            (id) => job.parts.find((part) => part.id === id)!.priority === priority,
-          );
-          if (!group.length) return group;
-          const offset = insertionPass % group.length;
-          const rotated = [...group.slice(offset), ...group.slice(0, offset)];
-          return rotated.sort(
-            (a, b) => Number(previousFailed.has(a)) - Number(previousFailed.has(b)),
-          );
-        });
-        const failed = new Set<string>();
-        for (const id of candidates) {
-          const itemArea = areas.get(id)!;
-          let low = 0;
-          let high = Math.min(
-            available.filter((item) => item === id).length,
-            Math.floor((capacity - filledArea + POLICY.overlapMm2) / itemArea),
-          );
-          let step = 1;
-          while (low < high && !stopped()) {
-            const batch = Math.min(high, low + step);
-            const before = [...selected];
-            const ids = [...before, ...Array<string>(batch - low).fill(id)];
-            const trial = await attempt(ids, 'search', working?.result, true);
-            if (trial) {
-              filledArea += (batch - low) * itemArea;
-              low = batch;
-              step *= 2;
-            } else {
-              if (!stopped()) failed.add(id);
-              high = batch - 1;
-              step = Math.max(1, Math.floor(step / 2));
-            }
-          }
-        }
-        previousFailed = failed;
-        insertionPass++;
-      }
-      if (stopped()) break;
-      if (initialPass) {
-        initialPass = false;
-      } else {
-        insertionFailures = selected.length > beforeInsertion ? 0 : insertionFailures + 1;
-        progress();
-        if (insertionFailures > insertionFailureLimit) {
-          sheetEndReason = 'failure-limit';
-          break;
-        }
-      }
-      if (!best) {
-        sheetEndReason = stopped() ? 'stopped' : 'initial-placement-failed';
-        break;
-      }
-      await untilAbort(new Promise<void>((resolve) => setTimeout(resolve, 0)), signal);
-    }
-    if (stopped()) sheetEndReason = 'stopped';
-    else if ([...remaining.values()].every((quantity) => quantity <= 0))
-      sheetEndReason = 'all-parts-placed';
-    if (sheetEndReason) progress();
-    solve.endSheet?.();
-    observe = undefined;
-    observeWorking = undefined;
-    if (!best) failedStocks.set(stock.id, (failedStocks.get(stock.id) ?? 0) + 1);
-    else failedStocks.delete(stock.id);
-    if (best) {
-      sheets.push(best);
-      selected.forEach((id) => remaining.set(id, remaining.get(id)! - 1));
-      const snapshot = aggregate();
-      options.onSheet?.(snapshot);
-      publishCurrent(snapshot);
-    }
-  }
-  const result = aggregate();
-  return {
-    result,
-    reason: options.signal?.aborted
-      ? 'Stopped'
-      : !result.unplaced!.length
-        ? 'Complete'
-        : sheets.length >= count
-          ? 'StockExhausted'
-          : 'Unplaceable',
-  };
-}
-=======
->>>>>>> dev

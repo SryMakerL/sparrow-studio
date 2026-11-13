@@ -7,7 +7,7 @@ import {
   type Result,
   type SheetStock,
 } from '../src/engine/model';
-import { solveSheets, type StripAttempt } from '../src/engine/sheets';
+import { solveSheets, type SheetProgress, type StripAttempt } from '../src/engine/sheets';
 import { validate } from '../src/engine/geometry/validate';
 import { normalizeJob, bounds } from '../src/engine/geometry/normalize';
 import {
@@ -89,395 +89,6 @@ async function finish(pending: ReturnType<typeof solveSheets>, ms = 100) {
   return pending;
 }
 
-<<<<<<< HEAD
-describe('fixed sheet phases', () => {
-  it.each([undefined, 2])(
-    'selects, fully inserts, then keeps compressing complete single-sheet demand (%s seconds)',
-    async (seconds) => {
-      const input = job(3, 1);
-      input.settings.sheetLengthMm = 40;
-      input.settings.sheetCompressionSeconds = seconds;
-      const calls: string[] = [];
-      const budgets: number[] = [];
-      let seeded = false;
-      const solve: StripAttempt = async (child, _signal, _offer, budget, initial) => {
-        const n = quantity(child);
-        calls.push(
-          `${initial ? (n === initial.placements.length ? 'compress' : 'warm') : 'cold'}:${n}`,
-        );
-        budgets.push(budget!);
-        if (!initial && n === 3 && !seeded) return undefined;
-        seeded = true;
-        return row(child);
-      };
-      solve.continueSheet = vi.fn(() => {
-        throw Error('continuous must not run');
-      });
-      const controller = new AbortController();
-      const pending = solveSheets(input, solve, {
-        signal: controller.signal,
-        onProgress: (p) => expect(p.roundIndex).toBe(0),
-      });
-      await vi.advanceTimersByTimeAsync(250);
-      expect(calls).toEqual([
-        'cold:3',
-        'cold:1',
-        'warm:2',
-        'warm:3',
-        'compress:3',
-        'compress:3',
-        'compress:3',
-      ]);
-      expect(budgets).toEqual([
-        2500,
-        2500,
-        10_000,
-        10_000,
-        ...Array(3).fill((seconds ?? 10) * 1000),
-      ]);
-      controller.abort();
-      const outcome = await pending;
-      expect(outcome.reason).toBe('Stopped');
-      expect(solve.continueSheet).not.toHaveBeenCalled();
-      expect(outcome.result.unplaced).toEqual([]);
-      expect(validate(input, outcome.result).status).toBe('passed');
-    },
-  );
-
-  it('finishes the final sheet after the compression product window even with spare stock', async () => {
-    const input = job(1, 4, 10);
-    input.settings.sheetCompressionSeconds = 3;
-    const budgets: number[] = [];
-    const signals: AbortSignal[] = [];
-    const starts: number[] = [];
-    const sheets: number[] = [];
-    const pending = solveSheets(
-      input,
-      async (child, signal, _offer, budget, initial) => {
-        if (!initial) return row(child);
-        budgets.push(budget!);
-        signals.push(signal!);
-        starts.push(performance.now());
-        return new Promise(() => {});
-      },
-      { onProgress: (p) => sheets.push(p.sheetIndex) },
-    );
-    const outcome = await finish(pending, 10_000);
-    expect(budgets).toEqual([3000, 3000, 2800]);
-    expect(starts.slice(1).map((at, i) => at - starts[i])).toEqual([3100, 3100]);
-    expect(signals.every((signal) => signal.aborted)).toBe(true);
-    expect(new Set(sheets)).toEqual(new Set([0, 1]));
-    expect(outcome.reason).toBe('Complete');
-    expect(outcome.result.elapsedSeconds).toBe(
-      input.settings.sheetCompressionSeconds! * (input.settings.sheetInsertionFailures ?? 3),
-    );
-    expect(outcome.result.sheets).toHaveLength(1);
-    expect(outcome.result.unplaced).toEqual([]);
-    expect(validate(input, outcome.result).status).toBe('passed');
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(budgets).toHaveLength(3);
-  });
-
-  it.each(['complete', 'stop'] as const)(
-    'ends automatic single-sheet compression at the product window or early %s',
-    async (end) => {
-      const input = job(1, 1);
-      input.settings.sheetCompressionSeconds = 1;
-      input.settings.sheetInsertionFailures = 3;
-      const controller = new AbortController();
-      const signals: AbortSignal[] = [];
-      const budgets: number[] = [];
-      const rounds: number[] = [];
-      let settled = false;
-      const pending = solveSheets(
-        input,
-        async (child, signal, _offer, budget, initial) => {
-          if (!initial) return row(child);
-          budgets.push(budget!);
-          signals.push(signal!);
-          return new Promise(() => {});
-        },
-        {
-          signal: controller.signal,
-          onProgress: (p) => rounds.push(p.roundIndex),
-        },
-      ).then((outcome) => {
-        settled = true;
-        return outcome;
-      });
-      await vi.advanceTimersByTimeAsync(2500);
-      expect(settled).toBe(false);
-      expect(budgets).toEqual([1000, 1000, 800]);
-      expect(signals.map((signal) => signal.aborted)).toEqual([true, true, false]);
-      expect(new Set(rounds)).toEqual(new Set([0]));
-      if (end === 'stop') controller.abort();
-      else {
-        await vi.advanceTimersByTimeAsync(499);
-        expect(settled).toBe(false);
-        await vi.advanceTimersByTimeAsync(1);
-      }
-      const outcome = await pending;
-      expect(outcome.reason).toBe(end === 'stop' ? 'Stopped' : 'Complete');
-      expect(outcome.result.elapsedSeconds).toBe(
-        end === 'stop'
-          ? 2.5
-          : input.settings.sheetCompressionSeconds * input.settings.sheetInsertionFailures,
-      );
-      expect(signals.every((signal) => signal.aborted)).toBe(true);
-      expect(outcome.result.sheets).toHaveLength(1);
-      expect(outcome.result.unplaced).toEqual([]);
-      expect(validate(input, outcome.result).status).toBe('passed');
-      await vi.advanceTimersByTimeAsync(3000);
-      expect(budgets).toEqual([1000, 1000, 800]);
-    },
-  );
-
-  it('retries naturally finished slices with the latest best and ignores stale or worse candidates', async () => {
-    const input = job(1, 4);
-    const controller = new AbortController();
-    const seeds: string[] = [];
-    const starts: number[] = [];
-    const published: string[] = [];
-    let oldOffer: ((result: Result) => void) | undefined;
-    let base: Result | undefined;
-    let settled = false;
-    const pending = solveSheets(
-      input,
-      async (child, _signal, offer, _budget, initial) => {
-        base = (await row(child))!;
-        if (!initial) return { ...base, usedLengthMm: 18, seed: 'initial' };
-        seeds.push(initial.seed);
-        starts.push(performance.now());
-        if (seeds.length === 1) {
-          oldOffer = offer;
-          return { ...base, usedLengthMm: 16, seed: 'first-best' };
-        }
-        if (seeds.length === 2) {
-          oldOffer?.({ ...base, usedLengthMm: 10, seed: 'stale-best' });
-          offer?.({ ...base, usedLengthMm: 16, seed: 'equal' });
-          return { ...base, usedLengthMm: 17, seed: 'worse' };
-        }
-        if (seeds.length === 3) return undefined;
-        if (seeds.length === 4) {
-          offer?.({ ...base, usedLengthMm: 14, seed: 'latest-best' });
-          return { ...base, usedLengthMm: 15, seed: 'worse-return' };
-        }
-        return undefined;
-      },
-      {
-        signal: controller.signal,
-        onSheet: (result) => published.push(result.sheets![0].result.seed),
-        onProgress: (p) => expect(p.sheetIndex).toBe(0),
-      },
-    ).then((outcome) => {
-      settled = true;
-      return outcome;
-    });
-    await vi.advanceTimersByTimeAsync(450);
-    expect(settled).toBe(false);
-    expect(seeds).toEqual(['initial', 'first-best', 'first-best', 'first-best', 'latest-best']);
-    expect(starts.slice(1).map((at, i) => at - starts[i])).toEqual([100, 100, 100, 100]);
-    expect(published).toEqual(['initial', 'first-best', 'latest-best']);
-    controller.abort();
-    const outcome = await pending;
-    expect(outcome.reason).toBe('Stopped');
-    expect(outcome.result.sheets).toHaveLength(1);
-    expect(outcome.result.sheets![0].result.seed).toBe('latest-best');
-    expect(validate(input, outcome.result).status).toBe('passed');
-    const count = published.length;
-    oldOffer?.({ ...base!, usedLengthMm: 10, seed: 'after-stop' });
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(published).toHaveLength(count);
-    expect(seeds).toHaveLength(5);
-  });
-
-  it.each([1, 2])(
-    'compresses the final sheet for the product window after committing another sheet (%s failures)',
-    async (limit) => {
-      const input = job(3, 4);
-      input.settings.sheetCompressionSeconds = 1;
-      input.settings.sheetInsertionFailures = limit;
-      const compressed: number[] = [];
-      const budgets: number[] = [];
-      const signals: AbortSignal[] = [];
-      const startedAt = performance.now();
-      let finalStartedAt = 0;
-      let settled = false;
-      const pending = solveSheets(input, async (child, signal, _offer, budget, initial) => {
-        if (initial && quantity(child) === initial.placements.length) {
-          compressed.push(quantity(child));
-          if (quantity(child) === 1) {
-            if (!budgets.length) finalStartedAt = performance.now();
-            budgets.push(budget!);
-            signals.push(signal!);
-            return new Promise(() => {});
-          }
-        }
-        return row(child);
-<<<<<<< HEAD
-      }),
-    );
-    expect(compressed).toEqual([2, 2, 2, 2, 1]);
-    expect(outcome.reason).toBe('Complete');
-    expect(outcome.result.sheets!.map((sheet) => quantity(sheet.job))).toEqual([2, 1]);
-    expect(outcome.result.unplaced).toEqual([]);
-    expect(outcome.result.elapsedSeconds).toBeLessThan(0.1);
-    expect(validate(input, outcome.result).status).toBe('passed');
-  });
-=======
-      }).then((outcome) => {
-        settled = true;
-        return outcome;
-      });
-      await vi.advanceTimersByTimeAsync(10);
-      expect(budgets).toEqual([1000]);
-      await vi.advanceTimersByTimeAsync(limit * 1000 - (performance.now() - finalStartedAt) - 1);
-      expect(settled).toBe(false);
-      await vi.advanceTimersByTimeAsync(1);
-      const outcome = await pending;
-      expect(performance.now() - finalStartedAt).toBe(
-        input.settings.sheetCompressionSeconds * limit * 1000,
-      );
-      expect(compressed).toEqual([...Array(limit).fill(2), ...Array(limit).fill(1)]);
-      expect(budgets).toEqual(limit === 1 ? [1000] : [1000, 900]);
-      expect(signals.every((signal) => signal.aborted)).toBe(true);
-      expect(outcome.reason).toBe('Complete');
-      expect(outcome.result.sheets!.map((sheet) => quantity(sheet.job))).toEqual([2, 1]);
-      expect(outcome.result.unplaced).toEqual([]);
-      expect(outcome.result.elapsedSeconds).toBe((finalStartedAt - startedAt) / 1000 + limit);
-      expect(validate(input, outcome.result).status).toBe('passed');
-    },
-  );
->>>>>>> dev
-
-  it.each([undefined, 1])(
-    'compresses after each failed insertion before retrying (%s)',
-    async (limit) => {
-      const input = job(3, 2);
-      input.settings.sheetLengthMm = 30;
-      input.settings.sheetInsertionFailures = limit;
-      let sheet = 0;
-      const calls: string[] = [];
-      const controller = new AbortController();
-      const outcome = await finish(
-        solveSheets(
-          input,
-          async (child, _signal, _offer, _budget, initial) => {
-            calls.push(
-              `${initial ? (quantity(child) === initial.placements.length ? 'compress' : 'warm') : 'cold'}:${quantity(child)}`,
-            );
-            return quantity(child) === 1 ? row(child) : undefined;
-          },
-          {
-            signal: controller.signal,
-            onProgress: (p) => {
-              sheet = p.sheetIndex;
-              if (sheet === 1) controller.abort();
-            },
-          },
-        ),
-      );
-<<<<<<< HEAD
-      const failedPass = ['warm:2', 'cold:2'];
-      const limitValue = limit ?? 3;
-=======
-      const failedPass = ['warm:2'];
->>>>>>> dev
-      expect(calls).toEqual([
-        'cold:3',
-        'cold:1',
-        ...failedPass,
-        ...Array.from({ length: limitValue }, () => ['compress:1', ...failedPass]).flat(),
-        'compress:1',
-        ...failedPass,
-      ]);
-      expect(sheet).toBe(1);
-      expect(outcome.result.unplaced).toEqual([{ partId: input.parts[0].id, quantity: 2 }]);
-      expect(outcome.result.elapsedSeconds).toBeLessThan(0.1);
-    },
-  );
-
-  it.each([
-    { priorities: [0, 0, 0], expected: ['ABC', 'BCA', 'CAB', 'ABC'] },
-    { priorities: [2, 0, 0], expected: ['ABC', 'ACB', 'ABC', 'ACB'] },
-  ])(
-    'rotates failed candidates only within equal priorities ($priorities)',
-    async ({ priorities, expected }) => {
-      const input = job(1, 2);
-      const seed = { ...part(10, 1), id: 'seed', priority: 10 };
-      const extra = [9, 8, 7].map((size, index) => ({
-        ...part(size, 1),
-        id: 'ABC'[index],
-        priority: priorities[index],
-      }));
-      input.parts = [seed, ...extra];
-      input.settings.sheetLengthMm = 100;
-      const controller = new AbortController();
-      const passes: string[][] = [[]];
-      const retries: string[] = [];
-      let placementBuilt = false;
-      const outcome = await finish(
-        solveSheets(
-          input,
-          async (child, _signal, _offer, _budget, initial) => {
-            if (quantity(child) === 1 && child.parts[0].id === seed.id) {
-              if (initial) passes.push([]);
-              placementBuilt = true;
-              return row(child);
-            }
-            const id = child.parts.find((part) => part.id !== seed.id)!.id;
-            if (initial) {
-              passes.at(-1)!.push(id);
-            } else if (placementBuilt) {
-              retries.push(id);
-            }
-            return undefined;
-          },
-          {
-            signal: controller.signal,
-            onProgress: (progress) => {
-              if (progress.sheetIndex === 1) controller.abort();
-            },
-          },
-        ),
-      );
-      expect(passes.map((pass) => pass.join(''))).toEqual(expected);
-      expect(retries).toEqual([]);
-      expect(outcome.result.sheets![0].job.parts.map((part) => part.id)).toEqual(['seed']);
-    },
-  );
-
-  it('resets insertion failures only when an insertion adds copies', async () => {
-    const input = job(4, 2);
-    input.settings.sheetLengthMm = 40;
-    const controller = new AbortController();
-    let compressions = 0;
-    const counts: number[] = [];
-    const outcome = await finish(
-      solveSheets(
-        input,
-        async (child, _signal, _offer, _budget, initial) => {
-          const n = quantity(child);
-          if (initial && n === initial.placements.length) {
-            compressions++;
-            counts.push(n);
-            return row(child);
-          }
-          if (n === 1 || (compressions >= 3 && n === 2)) return row(child);
-          return undefined;
-        },
-        {
-          signal: controller.signal,
-          onProgress: (p) => {
-            if (p.sheetIndex === 1) controller.abort();
-          },
-        },
-      ),
-    );
-    expect(counts).toEqual([1, 1, 1, 2, 2, 2, 2]);
-    expect(outcome.result.sheets![0].job.parts[0].quantity).toBe(2);
-    expect(validate(input, outcome.result).status).toBe('passed');
-=======
 describe('joint virtual sheet solver', () => {
   it('solves selected boards together and restores local coordinates and copy indices', async () => {
     const input = job();
@@ -503,90 +114,9 @@ describe('joint virtual sheet solver', () => {
     expect(output.sheets![1].result.placements.map((p) => p.copyIndex)).toEqual([0, 1]);
     expect(validate(input, output).status).toBe('passed');
     expect(solve.beginSheet).toHaveBeenCalledTimes(1);
->>>>>>> dev
   });
   it('accepts an evacuated first board even when the virtual right boundary grows', async () => {
     const input = job(3, 2);
-<<<<<<< HEAD
-    input.settings.sheetLengthMm = 40;
-    const controller = new AbortController();
-    let compressions = 0;
-    const progress: SheetProgress[] = [];
-    const outcome = await finish(
-      solveSheets(
-        input,
-        async (child, _signal, _offer, _budget, initial) => {
-          if (quantity(child) > 1) return undefined;
-          if (initial) {
-            compressions++;
-            await new Promise((resolve) => setTimeout(resolve, 5));
-          }
-          return { ...(await row(child))!, usedLengthMm: 14 - compressions };
-        },
-        {
-          signal: controller.signal,
-          onProgress: (p) => {
-            progress.push(p);
-            if (p.sheetIndex === 1) controller.abort();
-          },
-        },
-      ),
-    );
-    expect(compressions).toBe(4);
-    const times = progress.filter((p) => p.sheetIndex === 0).map((p) => p.lastImprovementAt);
-    expect(new Set(times).size).toBe(5);
-    expect(outcome.result.sheets![0].result.usedLengthMm).toBe(10);
-  });
-
-  it('uses validated equal-width rearrangements for insertion without publishing a best improvement', async () => {
-    const input = job(2, 1);
-    input.settings.materialWidthMm = 20;
-    input.settings.sheetLengthMm = 40;
-    input.settings.sheetCompressionSeconds = 1;
-    const controller = new AbortController();
-    const published: string[] = [];
-    const insertionStarts: number[] = [];
-    const accepted = vi.fn();
-    let compressionStarted = 0;
-    const solve: StripAttempt = async (child, _signal, _offer, budget, initial) => {
-      if (quantity(child) > 1) {
-        if (initial?.seed === 'rearranged') {
-          expect(initial.placements[0].yMm).toBe(10);
-          expect(performance.now() - compressionStarted).toBeGreaterThanOrEqual(900);
-          insertionStarts.push(performance.now());
-          controller.abort();
-        }
-        return undefined;
-      }
-      const base = (await row(child))!;
-      if (!initial) return { ...base, seed: 'initial' };
-      compressionStarted = performance.now();
-      await new Promise((resolve) => setTimeout(resolve, budget! - 100));
-      return {
-        ...base,
-        seed: 'rearranged',
-        placements: base.placements.map((placement) => ({ ...placement, yMm: 10 })),
-      };
-    };
-    solve.acceptCandidate = accepted;
-    const pending = solveSheets(input, solve, {
-      signal: controller.signal,
-      onSheet: (result) => published.push(result.sheets![0].result.seed),
-    });
-    await vi.advanceTimersByTimeAsync(800);
-    expect(insertionStarts).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(300);
-    await pending;
-    expect(insertionStarts).toHaveLength(1);
-    expect(published).toEqual(['initial']);
-    expect(accepted.mock.calls.map(([result]) => result.seed)).toEqual(['initial', 'rearranged']);
-  });
-
-  it('uses the last validated equal-width compressed layout for the next warm insertion', async () => {
-    const input = job(2, 1);
-    input.settings.materialWidthMm = 20;
-=======
->>>>>>> dev
     input.settings.sheetLengthMm = 30;
     let compressed = false;
     const solve: StripAttempt = async (child, _signal, offer, _budget, initial) => {
@@ -742,6 +272,46 @@ describe('joint virtual sheet solver', () => {
     expect(sizes).toContain(2);
     expect(output.unplaced).toEqual([]);
   });
+  it.each([
+    'Warm start insertion failed: no valid placement',
+    'No valid initial placement',
+    'Invalid initial placement',
+    'Initial placement failed',
+  ])('retries a failed joint warm start cold once: %s', async (message) => {
+    const input = job(3, 2);
+    input.settings.sheetLengthMm = 30;
+    let coldAttempts = 0;
+    let warmAttempts = 0;
+    const { result: output } = await finish(
+      solveSheets(input, async (child, _signal, offer, _budget, initial) => {
+        if (child.settings.virtualBoards!.length === 2) {
+          const p = child.parts[0];
+          return result(
+            [0, 10, 31].map((xMm, copyIndex) => ({
+              partId: p.id,
+              copyIndex,
+              xMm,
+              yMm: 0,
+              angleDeg: 0,
+            })),
+            41,
+          );
+        }
+        if (initial) {
+          warmAttempts++;
+          offer?.((await virtualRow(child))!);
+          throw Error(message);
+        }
+        coldAttempts++;
+        return virtualRow(child);
+      }),
+    );
+    expect(warmAttempts).toBe(2);
+    expect(coldAttempts).toBe(1);
+    expect(output.sheets).toHaveLength(1);
+    expect(output.unplaced).toEqual([]);
+    expect(validate(input, output).status).toBe('passed');
+  });
   it('replaces oversized stock with a smaller available board at equal priority', async () => {
     const input = job(1, 2);
     input.settings.sheetStocks = [
@@ -786,6 +356,279 @@ describe('joint virtual sheet solver', () => {
     const { result: output } = await finish(solveSheets(input, virtualRow));
     expect(output.sheets![0].job.parts.map((p) => p.id)).toEqual([high.id]);
     expect(output.unplaced).toEqual([{ partId: low.id, quantity: 1 }]);
+  });
+  it('reports joint phases and updates improvement time only for a better physical layout', async () => {
+    const input = job(1, 1);
+    input.settings.materialWidthMm = 20;
+    input.settings.sheetLengthMm = 40;
+    input.settings.timeLimitSeconds = 30;
+    const started = performance.now();
+    const progress: SheetProgress[] = [];
+    const published: string[] = [];
+    const budgets: number[] = [];
+    let lateOffer: ((candidate: Result) => void) | undefined;
+    let improved: Result | undefined;
+    const solve: StripAttempt = async (child, _signal, offer, budget, initial) => {
+      budgets.push(budget!);
+      const base = (await virtualRow(child))!;
+      const layout = (seed: string, xMm: number, yMm = 0): Result => ({
+        ...base,
+        seed,
+        usedLengthMm: xMm + 10,
+        placements: base.placements.map((placement) => ({ ...placement, xMm, yMm })),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (!initial) return layout('initial', 10);
+      expect(initial.seed).toBe('initial');
+      lateOffer = offer;
+      offer?.(layout('equal', 10, 10));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      offer?.(layout('worse', 15));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      improved = layout('better', 0);
+      offer?.(improved);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return layout('worse-return', 15);
+    };
+    const accepted = vi.fn();
+    solve.acceptCandidate = accepted;
+    const outcome = await finish(
+      solveSheets(input, solve, {
+        onProgress: (p) => progress.push(p),
+        onSheet: (candidate) => published.push(candidate.seed),
+      }),
+    );
+    expect(progress).toEqual([
+      {
+        roundIndex: 0,
+        sheetIndex: 0,
+        lastImprovementAt: started,
+        phase: 'Insertion',
+        insertionFailures: 0,
+        selectedBoards: 1,
+      },
+      {
+        roundIndex: 0,
+        sheetIndex: 0,
+        lastImprovementAt: started + 5,
+        phase: 'Compression',
+        insertionFailures: 0,
+        selectedBoards: 1,
+      },
+    ]);
+    expect(budgets).toEqual([30_000, 29_995]);
+    expect(published).toEqual(['initial', 'better']);
+    expect(accepted.mock.calls.map(([candidate]) => candidate.seed)).toContain('equal');
+    expect(outcome.reason).toBe('Complete');
+    expect(outcome.result.seed).toBe('better');
+    expect(validate(input, outcome.result).status).toBe('passed');
+    const acceptedCount = accepted.mock.calls.length;
+    lateOffer?.({ ...improved!, seed: 'late' });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(accepted).toHaveBeenCalledTimes(acceptedCount);
+    expect(published).toEqual(['initial', 'better']);
+  });
+  it('keeps real stages through candidates and clears them before compression', async () => {
+    const progress: SheetProgress[] = [];
+    let searchStage: Parameters<StripAttempt>[6];
+    let compressionStage: Parameters<StripAttempt>[6];
+    const solve: StripAttempt = async (
+      child,
+      _signal,
+      offer,
+      _budget,
+      initial,
+      onStarted,
+      onStage,
+    ) => {
+      expect(onStage).toBeTypeOf('function');
+      const base = (await virtualRow(child))!;
+      if (!initial) {
+        searchStage = onStage;
+        onStage!({ stage: 'local', boardIndex: 1 });
+        offer?.(base);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        expect(progress.at(-1)?.stage).toEqual({ stage: 'local', boardIndex: 1 });
+        onStage!({ stage: 'global', phase: 'Exploration' });
+        offer?.({ ...base, seed: 'global-candidate' });
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        expect(progress.at(-1)?.stage).toEqual({ stage: 'global', phase: 'Exploration' });
+        expect(progress.at(-1)?.stage).not.toHaveProperty('boardIndex');
+      } else {
+        compressionStage = onStage;
+        expect(progress.at(-1)).toMatchObject({ phase: 'Compression' });
+        expect(progress.at(-1)).not.toHaveProperty('stage');
+        const count = progress.length;
+        searchStage?.({ stage: 'local', boardIndex: 0 });
+        expect(progress).toHaveLength(count);
+        onStage!({ stage: 'local', boardIndex: 2 });
+        onStarted?.(true);
+        expect(progress.at(-1)).toMatchObject({
+          compressionStatus: 'running',
+          stage: { stage: 'local', boardIndex: 2 },
+        });
+        offer?.({ ...base, seed: 'compression-candidate' });
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        expect(progress.at(-1)?.stage).toEqual({ stage: 'local', boardIndex: 2 });
+        onStage!({ stage: 'global', phase: 'Compression' });
+      }
+      return base;
+    };
+    const publishedStages: SheetProgress['stage'][] = [];
+    const acceptedStages: SheetProgress['stage'][] = [];
+    solve.acceptCandidate = () => acceptedStages.push(progress.at(-1)?.stage);
+    const outcome = await finish(
+      solveSheets(job(), solve, {
+        onProgress: (next) => progress.push(next),
+        onCurrentRound: () => publishedStages.push(progress.at(-1)?.stage),
+      }),
+    );
+    expect(outcome.reason).toBe('Complete');
+    expect(publishedStages).toContainEqual({ stage: 'local', boardIndex: 1 });
+    expect(publishedStages).toContainEqual({ stage: 'global', phase: 'Exploration' });
+    expect(publishedStages).toContainEqual({ stage: 'local', boardIndex: 2 });
+    expect(acceptedStages).toEqual(publishedStages);
+    expect(progress.at(-1)?.stage).toEqual({ stage: 'global', phase: 'Compression' });
+    const count = progress.length;
+    searchStage?.({ stage: 'local', boardIndex: 0 });
+    compressionStage?.({ stage: 'evacuation' });
+    expect(progress).toHaveLength(count);
+  });
+  it('rejects a finished search stage while its candidate is still being validated', async () => {
+    const progress: SheetProgress[] = [];
+    let lateStage: Parameters<StripAttempt>[6];
+    let release: (() => void) | undefined;
+    const solve: StripAttempt = async (
+      child,
+      _signal,
+      _offer,
+      _budget,
+      initial,
+      _started,
+      onStage,
+    ) => {
+      if (!initial) {
+        lateStage = onStage;
+        onStage?.({ stage: 'local', boardIndex: 0 });
+      }
+      return virtualRow(child);
+    };
+    const pending = solveSheets(job(1, 1), solve, {
+      onProgress: (next) => progress.push(next),
+      validate: async (child, candidate) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return validate(child, candidate);
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(release).toBeTypeOf('function');
+    expect(progress.at(-1)?.phase).toBe('Insertion');
+    const count = progress.length;
+    lateStage?.({ stage: 'global', phase: 'Exploration' });
+    expect(progress).toHaveLength(count);
+    release!();
+    await vi.advanceTimersByTimeAsync(1);
+    release!();
+    expect((await finish(pending)).reason).toBe('Complete');
+  });
+  it('clears stages for a new combination and a failed warm search retry', async () => {
+    const input = job(3, 2);
+    input.settings.sheetLengthMm = 30;
+    const progress: SheetProgress[] = [];
+    let combination = 0;
+    let previousCombinationStage: Parameters<StripAttempt>[6];
+    let warmStage: Parameters<StripAttempt>[6];
+    let warmRetried = false;
+    const solve: StripAttempt = async (
+      child,
+      _signal,
+      _offer,
+      _budget,
+      initial,
+      _started,
+      onStage,
+    ) => {
+      const base = (await virtualRow(child))!;
+      const compressing =
+        initial?.placements.length === child.parts.reduce((sum, part) => sum + part.quantity, 0);
+      if (combination === 1) {
+        previousCombinationStage = onStage;
+        onStage?.({ stage: 'local', boardIndex: 1 });
+        const secondBoard = bounds(child.settings.virtualBoards![1].outer)[0];
+        return {
+          ...base,
+          placements: base.placements.map((placement, index) =>
+            index === 2 ? { ...placement, xMm: secondBoard } : placement,
+          ),
+          usedLengthMm: secondBoard + 10,
+        };
+      }
+      if (!compressing && initial) {
+        expect(initial.placements).toHaveLength(2);
+        warmStage = onStage;
+        onStage?.({ stage: 'local', boardIndex: 0 });
+        throw Error('Warm start insertion failed: test retry');
+      }
+      if (!compressing) {
+        warmRetried = true;
+        expect(progress.at(-1)).toMatchObject({ roundIndex: 1, phase: 'Insertion' });
+        expect(progress.at(-1)).not.toHaveProperty('stage');
+        const count = progress.length;
+        warmStage?.({ stage: 'global', phase: 'Exploration' });
+        previousCombinationStage?.({ stage: 'local', boardIndex: 1 });
+        expect(progress).toHaveLength(count);
+      }
+      onStage?.({ stage: 'global', phase: compressing ? 'Compression' : 'Exploration' });
+      return base;
+    };
+    solve.beginSheet = () => {
+      combination++;
+      expect(progress.at(-1)).toMatchObject({ roundIndex: combination - 1, phase: 'Insertion' });
+      expect(progress.at(-1)).not.toHaveProperty('stage');
+      const count = progress.length;
+      previousCombinationStage?.({ stage: 'evacuation' });
+      expect(progress).toHaveLength(count);
+    };
+    const outcome = await finish(
+      solveSheets(input, solve, { onProgress: (next) => progress.push(next) }),
+    );
+    expect(combination).toBe(2);
+    expect(warmRetried).toBe(true);
+    expect(outcome.reason).toBe('Complete');
+    expect(outcome.result.sheets).toHaveLength(1);
+  });
+  it('ignores stage messages immediately on abort and after attempt teardown', async () => {
+    const controller = new AbortController();
+    const progress: SheetProgress[] = [];
+    let lateStage: Parameters<StripAttempt>[6];
+    const solve: StripAttempt = async (
+      _child,
+      _signal,
+      _offer,
+      _budget,
+      _initial,
+      _started,
+      onStage,
+    ) => {
+      lateStage = onStage;
+      onStage?.({ stage: 'local', boardIndex: 1 });
+      return new Promise(() => {});
+    };
+    const pending = solveSheets(job(), solve, {
+      signal: controller.signal,
+      onProgress: (next) => progress.push(next),
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(progress.at(-1)?.stage).toEqual({ stage: 'local', boardIndex: 1 });
+    const count = progress.length;
+    controller.abort();
+    lateStage?.({ stage: 'global', phase: 'Compression' });
+    expect(progress).toHaveLength(count);
+    expect((await pending).reason).toBe('Stopped');
+    lateStage?.({ stage: 'evacuation' });
+    expect(progress).toHaveLength(count);
   });
   it('cancels uncooperative solvers and ignores late candidates', async () => {
     const controller = new AbortController();
@@ -842,6 +685,189 @@ describe('joint virtual sheet solver', () => {
     expect(calls).toBeGreaterThan(0);
     expect(calls).toBeLessThanOrEqual(10);
     expect(outcome.result.elapsedSeconds).toBeLessThanOrEqual(10.1);
+  });
+  it.each(['normalize', 'begin', 'search', 'validate', 'compress'] as const)(
+    'enforces the total deadline during joint %s',
+    async (phase) => {
+      const input = job(1, 1);
+      input.settings.timeLimitSeconds = 10;
+      const publish = vi.fn();
+      let signal: AbortSignal | undefined;
+      const hang = (active?: AbortSignal): Promise<never> => {
+        signal = active;
+        return new Promise(() => {});
+      };
+      const solve: StripAttempt = async (child, active, _offer, _budget, initial) => {
+        if (phase === 'search' || (phase === 'compress' && initial)) return hang(active);
+        return virtualRow(child);
+      };
+      solve.beginSheet = phase === 'begin' ? (_child, active) => hang(active) : undefined;
+      solve.endSheet = vi.fn();
+      const pending = solveSheets(input, solve, {
+        onSheet: publish,
+        normalize: phase === 'normalize' ? (_child, active) => hang(active) : undefined,
+        validate: phase === 'validate' ? (_child, _candidate, active) => hang(active) : undefined,
+      });
+      const outcome = await finish(pending, 10_100);
+      expect(signal?.aborted).toBe(true);
+      expect(outcome.result.elapsedSeconds).toBe(10);
+      expect(solve.endSheet).toHaveBeenCalled();
+      expect(outcome.result.sheets).toHaveLength(phase === 'compress' ? 1 : 0);
+      expect(publish).toHaveBeenCalledTimes(phase === 'compress' ? 1 : 0);
+      expect(validate(input, outcome.result).status).toBe('passed');
+    },
+  );
+  it('does not truncate joint retries at the old combination round cap', async () => {
+    const input = job(100, 1);
+    const demands: number[] = [];
+    const rounds: number[] = [];
+    const snapshots: Result[] = [];
+    const outcome = await finish(
+      solveSheets(
+        input,
+        async (child) => {
+          demands.push(child.parts[0].quantity);
+          if (child.parts[0].quantity === 1) return virtualRow(child);
+        },
+        {
+          onProgress: (p) => rounds.push(p.roundIndex),
+          onCurrentRound: (candidate, round) => {
+            expect(candidate.roundIndex).toBe(round);
+            snapshots.push(candidate);
+          },
+        },
+      ),
+    );
+    expect(demands.filter((quantity) => quantity > 1).length).toBeGreaterThan(8);
+    expect(Math.max(...rounds)).toBeGreaterThan(8);
+    expect(snapshots.length).toBeGreaterThan(0);
+    expect(outcome.result.sheets![0].result.placements).toHaveLength(1);
+    expect(outcome.result.unplaced).toEqual([{ partId: input.parts[0].id, quantity: 99 }]);
+    expect(validate(input, outcome.result).status).toBe('passed');
+  });
+  it('forwards local, global and evacuation budgets without capping the joint attempt', async () => {
+    const input = job(1, 1);
+    input.settings.timeLimitSeconds = 30;
+    input.settings.sheetCycleBudget = {
+      localMs: 117,
+      globalMs: 229,
+      evacuationMs: 337,
+      localPercent: 41,
+      globalPercent: 53,
+      evacuationPercent: 67,
+      maxRounds: 0,
+      stallRounds: 0,
+    };
+    const budgets: number[] = [];
+    const progress: SheetProgress[] = [];
+    const solve: StripAttempt = async (child, _signal, _offer, budget, initial, onStarted) => {
+      expect(child.settings.sheetCycleBudget).toEqual(input.settings.sheetCycleBudget);
+      expect(JSON.parse(solverInput(child)).board_cycle).toEqual(input.settings.sheetCycleBudget);
+      budgets.push(budget!);
+      if (initial) onStarted?.(true);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return virtualRow(child);
+    };
+    const outcome = await finish(
+      solveSheets(input, solve, { onProgress: (p) => progress.push(p) }),
+    );
+    expect(budgets).toEqual([30_000, 29_995]);
+    expect(progress.at(-1)).toMatchObject({
+      phase: 'Compression',
+      compressionStatus: 'running',
+      selectedBoards: 1,
+    });
+    expect(outcome.result.sheets![0].job.settings.sheetCycleBudget).toEqual(
+      input.settings.sheetCycleBudget,
+    );
+  });
+  it('subtracts initialization time once and skips compression without enough total budget', async () => {
+    const input = job(1, 1);
+    input.settings.timeLimitSeconds = 10;
+    const budgets: number[] = [];
+    const progress: SheetProgress[] = [];
+    const solve: StripAttempt = async (child, _signal, _offer, budget) => {
+      budgets.push(budget!);
+      await new Promise((resolve) => setTimeout(resolve, 9_930));
+      return virtualRow(child);
+    };
+    solve.beginSheet = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+    const outcome = await finish(
+      solveSheets(input, solve, { onProgress: (p) => progress.push(p) }),
+      10_100,
+    );
+    expect(budgets).toEqual([9_980]);
+    expect(progress.at(-1)).toMatchObject({
+      phase: 'Compression',
+      compressionStatus: 'skipped-budget',
+    });
+    expect(outcome.result.unplaced).toEqual([]);
+  });
+  it('validates complementary triangles on each physical board instead of their overlapping bounds', async () => {
+    const input = job(4, 2);
+    const triangle = {
+      ...newPart([
+        [0, 0],
+        [10, 0],
+        [0, 10],
+      ]),
+      quantity: 4,
+      rotations: { kind: 'discrete' as const, degrees: [0, 180] },
+    };
+    input.parts = [triangle];
+    input.settings.sheetLengthMm = 10;
+    const outcome = await finish(
+      solveSheets(input, async (child) =>
+        result(
+          child.settings.virtualBoards!.flatMap((board, index) => {
+            const x = bounds(board.outer)[0];
+            return [
+              { partId: triangle.id, copyIndex: index * 2, xMm: x, yMm: 0, angleDeg: 0 },
+              {
+                partId: triangle.id,
+                copyIndex: index * 2 + 1,
+                xMm: x + 10,
+                yMm: 10,
+                angleDeg: 180,
+              },
+            ];
+          }),
+          child.settings.sheetLengthMm!,
+        ),
+      ),
+    );
+    expect(outcome.reason).toBe('Complete');
+    expect(outcome.result.sheets!.map((sheet) => sheet.result.placements.length)).toEqual([2, 2]);
+    expect(outcome.result.unplaced).toEqual([]);
+    expect(validate(input, outcome.result)).toMatchObject({ status: 'passed', errors: [] });
+  });
+  it('rejects a forged passed validation and duplicate virtual copy identities', async () => {
+    const input = job(2, 1);
+    const rejected = await finish(
+      solveSheets(input, async (child) => {
+        if (child.parts[0].quantity !== 2) return;
+        const candidate = (await virtualRow(child))!;
+        candidate.validation.status = 'passed';
+        candidate.placements = candidate.placements.map((placement) => ({ ...placement, xMm: 0 }));
+        return candidate;
+      }),
+    );
+    expect(rejected.result.sheets).toEqual([]);
+    const stock: SheetStock = {
+      id: 'copies',
+      name: 'copies',
+      kind: 'rectangle',
+      quantity: 1,
+      priority: 0,
+      lengthMm: 20,
+      widthMm: 10,
+    };
+    const virtual = stitchBoards(input, [stock]);
+    const candidate = (await virtualRow(virtual.job))!;
+    candidate.placements[1].copyIndex = 0;
+    expect(splitVirtualResult(input, virtual, candidate)).toBeUndefined();
   });
   it('propagates infrastructure failures', async () => {
     await expect(

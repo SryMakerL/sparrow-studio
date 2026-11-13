@@ -248,7 +248,6 @@ pub fn alternate_boards_until(
                 .div_f64(dirty.len().max(1) as f64)
                 .min(local_cap)
         });
-        listener.report_phase(OptimizationPhase::Compression);
         for index in dirty {
             if term.kill() || deadline.is_some_and(|end| Instant::now() >= end) {
                 break;
@@ -259,6 +258,7 @@ pub fn alternate_boards_until(
                     end.min(Instant::now() + per_board)
                 }),
             };
+            listener.report_board_phase(index, OptimizationPhase::Exploration);
             let mut local_config = *config;
             local_config.expl_cfg.time_limit = per_board.mul_f64(0.76);
             local_config.cmpr_cfg.time_limit = per_board.mul_f64(0.19);
@@ -299,9 +299,14 @@ pub fn alternate_boards_until(
                 end.min(Instant::now() + global_budget)
             }),
         };
+        let exploration = round % 2 == 0;
+        listener.report_phase(if exploration {
+            OptimizationPhase::Exploration
+        } else {
+            OptimizationPhase::Compression
+        });
         let mut problem = SPProblem::new(instance.clone());
         problem.restore(&work);
-        let exploration = round % 2 == 0;
         let separator_config = if exploration {
             config.expl_cfg.separator_config
         } else {
@@ -321,12 +326,10 @@ pub fn alternate_boards_until(
         };
         if !global_term.kill() {
             if exploration {
-                reports.report_phase(OptimizationPhase::Exploration);
                 let mut phase = config.expl_cfg;
                 phase.time_limit = global_budget;
                 exploration_phase(instance, &mut separator, &mut reports, &global_term, &phase);
             } else {
-                reports.report_phase(OptimizationPhase::Compression);
                 let mut phase = config.cmpr_cfg;
                 phase.time_limit = global_budget;
                 compression_phase(
@@ -356,6 +359,7 @@ pub fn alternate_boards_until(
                 end.min(Instant::now() + evacuation_budget)
             }),
         };
+        listener.report_board_evacuation();
         work = evacuate_boards(instance, &work, &mut rng, &evacuation_term, listener);
         if better(instance, &work, &best) {
             best = work.clone();

@@ -506,7 +506,6 @@ fn geometric_bound_rearranges_single_and_identical_items_until_deadline() {
             self.evaluations += result.total_evals;
         }
     }
-<<<<<<< HEAD
     for quantity in [1, 2] {
         let mut session = SheetSession::create(&json!({
             "name":"bound", "strip_height":10, "stock_length":20,
@@ -533,37 +532,13 @@ fn geometric_bound_rearranges_single_and_identical_items_until_deadline() {
         let started = Instant::now();
         let deadline = started + Duration::from_millis(80);
         compress_until(&problem.instance, initial, 42, &session.config,
-            started + Duration::from_millis(40), deadline, &BasicTerminator::new(), &mut listener);
+            &session.board_cycle_budget, started + Duration::from_millis(40), deadline,
+            &BasicTerminator::new(), &mut listener);
         assert!(Instant::now() >= deadline);
         assert!(listener.evaluations > 0);
         assert_eq!(listener.phases, vec![OptimizationPhase::Exploration, OptimizationPhase::Compression]);
         assert_eq!(listener.reports, vec![ReportType::ExplFeas, ReportType::CmprFeas, ReportType::Final]);
     }
-=======
-    let mut listener = FinalCounter(0);
-    // Exercise the lower-bound exit directly, independently of LBF's placement slack.
-    let deadline = started + Duration::from_secs(10);
-    let input = session
-        .parse_request(
-            &request(&[0, 1], None, None, "compress")
-                .replace("\"budget_ms\":0", "\"budget_ms\":10000"),
-        )
-        .unwrap();
-    let term = SessionTerminator::new(&input, None);
-    compress_until(
-        &problem.instance,
-        at_bound,
-        42,
-        &session.config,
-        &session.board_cycle_budget,
-        deadline,
-        deadline,
-        &term,
-        &mut listener,
-    );
-    assert!(started.elapsed() < Duration::from_secs(2));
-    assert_eq!(listener.0, 1);
->>>>>>> dev
 }
 
 #[test]

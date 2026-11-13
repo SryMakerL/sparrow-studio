@@ -11,6 +11,7 @@ import { RunBar } from '../RunBar';
 import { rulerStep } from '../rulers';
 import { sheetStack } from './sheetStack';
 import { LayoutDrawing } from './LayoutDrawing';
+import { sheetBoardNumber, sheetStageLabel } from './sheetStageLabel';
 
 const sheetEndLabel = {
   'failure-limit': 'failure limit reached',
@@ -105,22 +106,19 @@ export function LiveView() {
               </span>
               {batch && (running || sheetHistory.length > 0) && (
                 <dl className="facts">
-<<<<<<< HEAD
                   {running && solver.sheetProgress && (
                     <>
+                      <dt>Boards in current combination</dt>
+                      <dd>{solver.sheetProgress.selectedBoards ?? '—'}</dd>
                       <dt>Current stage</dt>
                       <dd>
-                        {solver.sheetProgress.sheetEndReason
-                          ? 'Sheet complete'
-                          : solver.sheetProgress.phase}
+                        {sheetStageLabel(solver.sheetProgress.stage, solver.sheetProgress.phase)}
+                        {solver.sheetProgress.stage?.stage === 'local' && (
+                          <span className="muted"> · in current combination</span>
+                        )}
                       </dd>
-                      <dt>Current sheet</dt>
-                      <dd>{solver.sheetProgress.sheetIndex + 1}</dd>
-                      <dt>Insertion failures</dt>
-                      <dd>
-                        {solver.sheetProgress.insertionFailures} /{' '}
-                        {runJob?.settings.sheetInsertionFailures ?? 3}
-                      </dd>
+                      <dt>Candidate combination round</dt>
+                      <dd>{solver.sheetProgress.roundIndex + 1}</dd>
                       {solver.sheetProgress.compressionStatus && (
                         <>
                           <dt>Compression attempt</dt>
@@ -133,26 +131,14 @@ export function LiveView() {
                       )}
                     </>
                   )}
-                  {sheetHistory.map((entry) => (
-                    <Fragment key={`${entry.sheetIndex}-${sheetHistory.indexOf(entry)}`}>
+                  {sheetHistory.map((entry, index) => (
+                    <Fragment key={`${entry.sheetIndex}-${index}`}>
                       <dt>Sheet {entry.sheetIndex + 1} ended</dt>
                       <dd>
                         {entry.insertionFailures} failures · {sheetEndLabel[entry.reason]}
                       </dd>
                     </Fragment>
                   ))}
-=======
-                  <dt>Boards in current combination</dt>
-                  <dd>{solver.sheetProgress.selectedBoards ?? '—'}</dd>
-                  <dt>Current stage</dt>
-                  <dd>
-                    {solver.sheetProgress.phase === 'Insertion'
-                      ? 'Joint search'
-                      : 'Joint compression'}
-                  </dd>
-                  <dt>Candidate combination round</dt>
-                  <dd>{solver.sheetProgress.roundIndex + 1}</dd>
->>>>>>> dev
                 </dl>
               )}
               <div className="stack">
@@ -211,7 +197,9 @@ export function LiveView() {
           runJob && (
             <>
               <p className="muted">
-                {batch ? 'Validated candidate combination' : 'Live search and best valid layout'}
+                {batch
+                  ? `Validated candidate combination${currentResult?.roundIndex !== undefined ? ` · round ${currentResult.roundIndex + 1}` : ''}`
+                  : 'Live search and best valid layout'}
               </p>
               {!batch && (
                 <div className="segmented" role="group" aria-label="Layout shown">
@@ -237,12 +225,13 @@ export function LiveView() {
           batch ? (
             completed?.map((sheet, index) => {
               const percent = usedUtilization(sheet.job, sheet.result, netArea);
+              const boardNumber = sheetBoardNumber(sheet.result, index);
               return (
                 <g
                   key={index}
                   transform={`translate(0 ${stack.positions[index].offset})`}
                   role="group"
-                  aria-label={`Sheet ${index + 1}`}
+                  aria-label={`Sheet ${boardNumber}`}
                 >
                   <text
                     x={0}
@@ -250,7 +239,7 @@ export function LiveView() {
                     fontSize={13 * upp}
                     fill="var(--ink)"
                   >
-                    {`Sheet ${index + 1}${sheet.job.settings.sheetStock ? ` · ${sheet.job.settings.sheetStock.name}` : ''} · ${sheet.result.placements.length} parts · ${formatPercent(percent)} · ${formatLength(sheet.result.usedLengthMm, unit)} ${unit} used`}
+                    {`Sheet ${boardNumber}${sheet.job.settings.sheetStock ? ` · ${sheet.job.settings.sheetStock.name}` : ''} · ${sheet.result.placements.length} parts · ${formatPercent(percent)} · ${formatLength(sheet.result.usedLengthMm, unit)} ${unit} used`}
                   </text>
                   <LayoutDrawing
                     job={sheet.job}

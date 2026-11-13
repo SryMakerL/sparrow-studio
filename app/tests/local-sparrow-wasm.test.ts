@@ -57,11 +57,13 @@ it.each(['pkg', 'pkg-nosimd'])(
         clearanceMm: 1,
         sheetCycleBudget: {
           ...DEFAULT_SHEET_CYCLE_BUDGET,
-          localMs: 1500,
-          globalMs: 20,
-          evacuationMs: 5,
-          localPercent: 90,
-          maxRounds: 1,
+          localMs: 700,
+          globalMs: 600,
+          evacuationMs: 100,
+          localPercent: 50,
+          globalPercent: 50,
+          evacuationPercent: 50,
+          maxRounds: 2,
           stallRounds: 0,
         },
       },
@@ -97,6 +99,8 @@ it.each(['pkg', 'pkg-nosimd'])(
       localImproved = false,
       initialWidth: number | undefined;
     const phases: string[] = [];
+    const stages: { stage: string; boardIndex?: number; phase?: string }[] = [];
+    let currentStage: { stage: string; boardIndex?: number; phase?: string } | undefined;
     try {
       session.step(
         JSON.stringify({
@@ -115,6 +119,14 @@ it.each(['pkg', 'pkg-nosimd'])(
         '42',
         (text: string) => {
           const message = JSON.parse(text);
+          if (message.type === 'sheet-stage') {
+            currentStage = {
+              stage: message.stage,
+              boardIndex: message.boardIndex,
+              phase: message.phase,
+            };
+            stages.push(currentStage);
+          }
           if (message.type === 'phase') phases.push(message.phase);
           if (message.type === 'finished') finished = true;
           if (message.type !== 'candidate') return;
@@ -141,7 +153,8 @@ it.each(['pkg', 'pkg-nosimd'])(
           expect(aggregate).toBeDefined();
           expect(validate(job, aggregate!)).toMatchObject({ status: 'passed', errors: [] });
           expect(aggregate!.unplaced).toEqual([]);
-          if (phases.length >= 3 && phases.length <= 4) {
+          if (currentStage?.stage === 'local') {
+            expect(currentStage.boardIndex).toBe(0);
             const tail = candidate.placements
               .filter((p) => p.xMm >= 51)
               .map((p) => [p.xMm, p.yMm, p.angleDeg])
@@ -163,8 +176,14 @@ it.each(['pkg', 'pkg-nosimd'])(
       expect(finished).toBe(true);
       expect(candidates).toBeGreaterThan(1);
       expect(localImproved).toBe(true);
-      expect(phases.filter((p) => p === 'Exploration').length).toBeGreaterThanOrEqual(2);
-      expect(phases.filter((p) => p === 'Compression').length).toBeGreaterThanOrEqual(2);
+      expect(stages).toContainEqual({ stage: 'local', boardIndex: 0, phase: 'Exploration' });
+      expect(stages).toContainEqual({ stage: 'local', boardIndex: 0, phase: 'Compression' });
+      expect(stages).toContainEqual({ stage: 'global', phase: 'Exploration' });
+      expect(
+        stages.some((stage) => stage.stage === 'global' && stage.phase === 'Compression'),
+      ).toBe(true);
+      expect(phases.filter((p) => p === 'Exploration').length).toBeGreaterThanOrEqual(1);
+      expect(phases.filter((p) => p === 'Compression').length).toBeGreaterThanOrEqual(1);
       expect(performance.now() - start).toBeGreaterThan(400);
     } finally {
       session.free();
